@@ -3,7 +3,9 @@ import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detector_service.dart';
+import '../services/gaze_tracker.dart';
 import '../widgets/face_detector_painter.dart';
+import '../widgets/gaze_cursor_painter.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
@@ -21,11 +23,16 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // Face detection
   final FaceDetectorService _faceDetectorService = FaceDetectorService();
+  final GazeTracker _gazeTracker = GazeTracker();
   List<Face> _faces = [];
   bool _isDetecting = false;
   Size? _imageSize;
   int _frameCount = 0;
   String _debugInfo = '';
+  CameraDescription? _camera;
+
+  // Gaze tracking
+  GazeData? _currentGaze;
 
   @override
   void initState() {
@@ -54,13 +61,13 @@ class _CameraScreenState extends State<CameraScreen> {
         return;
       }
 
-      final frontCamera = _cameras!.firstWhere(
+      _camera = _cameras!.firstWhere(
             (camera) => camera.lensDirection == CameraLensDirection.front,
         orElse: () => _cameras!.first,
       );
 
       _cameraController = CameraController(
-        frontCamera,
+        _camera!,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.nv21,
@@ -73,7 +80,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
       setState(() {
         _isInitialized = true;
-        _debugInfo = 'Camera initialized, waiting for faces...';
+        _debugInfo = 'Camera initialized successfully';
       });
 
       print('✓ Camera initialized successfully');
@@ -93,21 +100,26 @@ class _CameraScreenState extends State<CameraScreen> {
       _frameCount++;
 
       final faces = await _faceDetectorService.detectFaces(image);
+      final screenSize = MediaQuery.of(context).size;
+      final imageSize = Size(image.width.toDouble(), image.height.toDouble());
+
+      GazeData? gazeData;
+      if (faces.isNotEmpty) {
+        gazeData = _gazeTracker.calculateGaze(
+          faces.first,
+          imageSize,
+          screenSize,
+        );
+      }
 
       setState(() {
         _faces = faces;
-        _imageSize = Size(image.width.toDouble(), image.height.toDouble());
-        _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length} | Image: ${image.width}x${image.height}';
+        _imageSize = imageSize;
+        _currentGaze = gazeData;
+        _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
       });
-
-      if (faces.isNotEmpty) {
-        print('✓ Face detected! Count: ${faces.length}');
-      }
     } catch (e) {
       print('✗ Error detecting faces: $e');
-      setState(() {
-        _debugInfo = 'Error: $e';
-      });
     } finally {
       _isDetecting = false;
     }
@@ -125,7 +137,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Eye Control App - Phase 2'),
+        title: const Text('Eye Control App - Phase 3'),
         backgroundColor: Colors.blue,
       ),
       body: _buildBody(),
@@ -141,7 +153,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return _buildErrorWidget(_errorMessage);
     }
 
-    if (!_isInitialized || _cameraController == null) {
+    if (!_isInitialized || _cameraController == null || _camera == null) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -172,9 +184,19 @@ class _CameraScreenState extends State<CameraScreen> {
             painter: FaceDetectorPainter(
               faces: _faces,
               imageSize: _imageSize!,
-              widgetSize: size,
+              rotation: InputImageRotation.rotation270deg,
+              cameraLensDirection: _camera!.lensDirection,
             ),
           ),
+
+        // Gaze cursor overlay
+        CustomPaint(
+          size: size,
+          painter: GazeCursorPainter(
+            gazePoint: _currentGaze?.gazePoint,
+            confidence: _currentGaze?.confidence ?? 0.0,
+          ),
+        ),
 
         // Status overlay
         Positioned(
@@ -214,37 +236,30 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Faces: ${_faces.length}',
+                  _debugInfo,
                   style: TextStyle(
                     color: Colors.white.withOpacity(0.9),
                     fontSize: 14,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  _debugInfo,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
-                    fontSize: 11,
-                  ),
-                ),
-                if (_faces.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                if (_currentGaze != null) ...[
+                  const SizedBox(height: 4),
                   Text(
-                    '🔵 Blue = Eyes | 🔴 Red = Landmarks',
+                    '👁️ Gaze: (${_currentGaze!.gazePoint.dx.toInt()}, ${_currentGaze!.gazePoint.dy.toInt()})',
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
-                      fontSize: 12,
+                      color: Colors.purpleAccent.withOpacity(0.9),
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ],
-                if (_faces.isEmpty && _frameCount > 30) ...[
+                if (_faces.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(
-                    'Tips:\n• Face the camera directly\n• Ensure good lighting\n• Remove glasses if possible',
+                    '🔵 Blue = Eyes | 🔴 Red = Landmarks | 🟣 Purple = Gaze',
                     style: TextStyle(
-                      color: Colors.yellowAccent.withOpacity(0.8),
-                      fontSize: 11,
+                      color: Colors.white.withOpacity(0.7),
+                      fontSize: 12,
                     ),
                   ),
                 ],
