@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import '../services/face_detector_service.dart';
+import 'package:face_detection_tflite/face_detection_tflite.dart';
+import '../services/iris_detector_service.dart';
 import '../services/gaze_tracker.dart';
-import '../widgets/face_detector_painter.dart';
+import '../utils/camera_image_converter.dart';
+import '../widgets/iris_painter.dart';
 import '../widgets/gaze_cursor_painter.dart';
+import '../models/calibration_point.dart';
+import 'calibration_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
@@ -22,17 +25,20 @@ class _CameraScreenState extends State<CameraScreen> {
   String _errorMessage = '';
 
   // Face detection
-  final FaceDetectorService _faceDetectorService = FaceDetectorService();
+  final IrisDetectorService _irisDetector = IrisDetectorService();
   final GazeTracker _gazeTracker = GazeTracker();
   List<Face> _faces = [];
   bool _isDetecting = false;
-  Size? _imageSize;
   int _frameCount = 0;
   String _debugInfo = '';
   CameraDescription? _camera;
 
   // Gaze tracking
   GazeData? _currentGaze;
+
+  // Calibration
+  bool _showCalibration = false;
+  List<CalibrationPoint> _calibrationPoints = [];
 
   @override
   void initState() {
@@ -46,17 +52,20 @@ class _CameraScreenState extends State<CameraScreen> {
     if (status.isDenied || status.isPermanentlyDenied) {
       setState(() {
         _permissionDenied = true;
-        _errorMessage = 'Camera permission is required for this app to work.';
+        _errorMessage = 'Camera permission required';
       });
       return;
     }
 
     try {
+      // Initialize iris detector
+      await _irisDetector.initialize();
+
       _cameras = await availableCameras();
 
       if (_cameras == null || _cameras!.isEmpty) {
         setState(() {
-          _errorMessage = 'No cameras found on this device.';
+          _errorMessage = 'No cameras found';
         });
         return;
       }
@@ -68,27 +77,25 @@ class _CameraScreenState extends State<CameraScreen> {
 
       _cameraController = CameraController(
         _camera!,
-        ResolutionPreset.medium,
+        ResolutionPreset.high,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.nv21,
+        imageFormatGroup: ImageFormatGroup.yuv420,
       );
 
       await _cameraController!.initialize();
-
-      // Start image stream for face detection
       _cameraController!.startImageStream(_processCameraImage);
 
       setState(() {
         _isInitialized = true;
-        _debugInfo = 'Camera initialized successfully';
+        _debugInfo = '✓ Iris tracking ready';
       });
 
-      print('✓ Camera initialized successfully');
+      print('✓ Camera and iris detector initialized');
     } catch (e) {
       setState(() {
-        _errorMessage = 'Error initializing camera: $e';
+        _errorMessage = 'Error: $e';
       });
-      print('✗ Camera error: $e');
+      print('✗ Error: $e');
     }
   }
 
@@ -99,37 +106,65 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       _frameCount++;
 
-      final faces = await _faceDetectorService.detectFaces(image);
+      // Convert camera image to bytes
+      final imageBytes = CameraImageConverter.convertCameraImageToBytes(image);
+
+      // Detect faces with iris tracking
+      final faces = await _irisDetector.detectFaces(imageBytes);
+
       final screenSize = MediaQuery.of(context).size;
-      final imageSize = Size(image.width.toDouble(), image.height.toDouble());
 
       GazeData? gazeData;
-      if (faces.isNotEmpty) {
-        gazeData = _gazeTracker.calculateGaze(
-          faces.first,
-          imageSize,
-          screenSize,
-        );
+      if (faces.isNotEmpty && faces.first.eyes != null) {
+        gazeData = _gazeTracker.calculateGaze(faces.first, screenSize);
       }
 
       setState(() {
         _faces = faces;
-        _imageSize = imageSize;
         _currentGaze = gazeData;
         _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
       });
     } catch (e) {
-      print('✗ Error detecting faces: $e');
+      print('✗ Processing error: $e');
     } finally {
       _isDetecting = false;
     }
+  }
+
+  void _startCalibration() {
+    final screenSize = MediaQuery.of(context).size;
+    setState(() {
+      _calibrationPoints = _gazeTracker.createCalibrationPoints(screenSize);
+      _showCalibration = true;
+    });
+  }
+
+  void _onPointCalibrated(int index) {
+    if (_faces.isNotEmpty) {
+      final screenSize = MediaQuery.of(context).size;
+      _gazeTracker.addCalibrationData(index, _faces.first, screenSize);
+    }
+  }
+
+  void _onCalibrationComplete() {
+    setState(() {
+      _showCalibration = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('✓ Calibration complete! Gaze tracking active.'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
   void dispose() {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
-    _faceDetectorService.dispose();
+    _irisDetector.dispose();
     super.dispose();
   }
 
@@ -137,8 +172,19 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Eye Control App - Phase 3'),
+        title: const Text('Eye Control - Iris Tracking'),
         backgroundColor: Colors.blue,
+        actions: [
+          if (_isInitialized && !_showCalibration)
+            IconButton(
+              icon: Icon(
+                _gazeTracker.isCalibrated ? Icons.check_circle : Icons.settings,
+                color: _gazeTracker.isCalibrated ? Colors.green : Colors.white,
+              ),
+              onPressed: _startCalibration,
+              tooltip: 'Calibrate',
+            ),
+        ],
       ),
       body: _buildBody(),
     );
@@ -153,14 +199,14 @@ class _CameraScreenState extends State<CameraScreen> {
       return _buildErrorWidget(_errorMessage);
     }
 
-    if (!_isInitialized || _cameraController == null || _camera == null) {
+    if (!_isInitialized || _cameraController == null) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 16),
-            Text('Initializing camera...'),
+            Text('Initializing iris tracker...'),
           ],
         ),
       );
@@ -177,96 +223,112 @@ class _CameraScreenState extends State<CameraScreen> {
           child: CameraPreview(_cameraController!),
         ),
 
-        // Face detection overlay
-        if (_imageSize != null)
+        // Iris detection overlay
+        if (!_showCalibration)
           CustomPaint(
             size: size,
-            painter: FaceDetectorPainter(
-              faces: _faces,
-              imageSize: _imageSize!,
-              rotation: InputImageRotation.rotation270deg,
-              cameraLensDirection: _camera!.lensDirection,
+            painter: IrisPainter(faces: _faces),
+          ),
+
+        // Gaze cursor
+        if (!_showCalibration)
+          CustomPaint(
+            size: size,
+            painter: GazeCursorPainter(
+              gazePoint: _currentGaze?.gazePoint,
+              confidence: _currentGaze?.confidence ?? 0.0,
             ),
           ),
 
-        // Gaze cursor overlay
-        CustomPaint(
-          size: size,
-          painter: GazeCursorPainter(
-            gazePoint: _currentGaze?.gazePoint,
-            confidence: _currentGaze?.confidence ?? 0.0,
+        // Calibration overlay
+        if (_showCalibration)
+          CalibrationScreen(
+            calibrationPoints: _calibrationPoints,
+            onPointCalibrated: _onPointCalibrated,
+            onCalibrationComplete: _onCalibrationComplete,
           ),
-        ),
 
         // Status overlay
-        Positioned(
-          top: 20,
-          left: 20,
-          right: 20,
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.7),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _faces.isNotEmpty ? Icons.face : Icons.face_outlined,
-                      color: _faces.isNotEmpty ? Colors.greenAccent : Colors.orange,
-                      size: 24,
+        if (!_showCalibration)
+          Positioned(
+            top: 20,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _faces.isNotEmpty ? Icons.face : Icons.face_outlined,
+                        color: _faces.isNotEmpty ? Colors.greenAccent : Colors.orange,
+                        size: 24,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _faces.isNotEmpty && _faces.first.eyes != null
+                            ? '✓ Iris Detected'
+                            : 'Looking for eyes...',
+                        style: TextStyle(
+                          color: _faces.isNotEmpty && _faces.first.eyes != null
+                              ? Colors.greenAccent
+                              : Colors.orange,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _debugInfo,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 14,
                     ),
-                    const SizedBox(width: 8),
+                  ),
+                  if (_currentGaze != null) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Text(
+                          '👁️ Gaze: (${_currentGaze!.gazePoint.dx.toInt()}, ${_currentGaze!.gazePoint.dy.toInt()})',
+                          style: TextStyle(
+                            color: Colors.purpleAccent.withOpacity(0.9),
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (_gazeTracker.isCalibrated)
+                          const Icon(
+                            Icons.check_circle,
+                            color: Colors.green,
+                            size: 16,
+                          ),
+                      ],
+                    ),
+                  ],
+                  if (!_gazeTracker.isCalibrated) ...[
+                    const SizedBox(height: 8),
                     Text(
-                      _faces.isNotEmpty
-                          ? '✓ Face Detected'
-                          : 'Looking for faces...',
+                      '⚠️ Tap settings to calibrate',
                       style: TextStyle(
-                        color: _faces.isNotEmpty
-                            ? Colors.greenAccent
-                            : Colors.orange,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                        color: Colors.yellow.withOpacity(0.9),
+                        fontSize: 12,
                       ),
                     ),
                   ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _debugInfo,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.9),
-                    fontSize: 14,
-                  ),
-                ),
-                if (_currentGaze != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    '👁️ Gaze: (${_currentGaze!.gazePoint.dx.toInt()}, ${_currentGaze!.gazePoint.dy.toInt()})',
-                    style: TextStyle(
-                      color: Colors.purpleAccent.withOpacity(0.9),
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
                 ],
-                if (_faces.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    '🔵 Blue = Eyes | 🔴 Red = Landmarks | 🟣 Purple = Gaze',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ],
+              ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -278,23 +340,13 @@ class _CameraScreenState extends State<CameraScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
-              color: Colors.red,
-              size: 64,
-            ),
+            const Icon(Icons.error_outline, color: Colors.red, size: 64),
             const SizedBox(height: 16),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16),
-            ),
+            Text(message, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
             if (showSettingsButton) ...[
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () {
-                  openAppSettings();
-                },
+                onPressed: () => openAppSettings(),
                 child: const Text('Open Settings'),
               ),
             ],
