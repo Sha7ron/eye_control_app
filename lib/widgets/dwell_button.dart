@@ -20,10 +20,10 @@ class DwellButton extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  State<DwellButton> createState() => _DwellButtonState();
+  State<DwellButton> createState() => DwellButtonState();  // CHANGED: removed underscore
 }
 
-class _DwellButtonState extends State<DwellButton>
+class DwellButtonState extends State<DwellButton>  // CHANGED: removed underscore
     with SingleTickerProviderStateMixin {
   bool _isHovering = false;
   double _progress = 0.0;

@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'dart:typed_data';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:camera/camera.dart';
 
@@ -14,11 +15,10 @@ class FaceDetectorService {
 
   Future<List<Face>> detectFaces(CameraImage cameraImage) async {
     try {
-      final WriteBuffer allBytes = WriteBuffer();
-      for (final Plane plane in cameraImage.planes) {
-        allBytes.putUint8List(plane.bytes);
-      }
-      final bytes = allBytes.done().buffer.asUint8List();
+      final bytes = cameraImage.planes.fold<List<int>>(
+        [],
+            (previousValue, element) => previousValue..addAll(element.bytes),
+      );
 
       final Size imageSize = Size(
         cameraImage.width.toDouble(),
@@ -28,19 +28,8 @@ class FaceDetectorService {
       final InputImageRotation imageRotation = InputImageRotation.rotation270deg;
       final InputImageFormat inputImageFormat = InputImageFormat.nv21;
 
-      final planeData = cameraImage.planes.map(
-            (Plane plane) {
-          return InputImageMetadata(
-            size: imageSize,
-            rotation: imageRotation,
-            format: inputImageFormat,
-            bytesPerRow: plane.bytesPerRow,
-          );
-        },
-      ).toList();
-
       final inputImage = InputImage.fromBytes(
-        bytes: bytes,
+        bytes: Uint8List.fromList(bytes),
         metadata: InputImageMetadata(
           size: imageSize,
           rotation: imageRotation,

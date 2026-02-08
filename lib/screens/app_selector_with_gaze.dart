@@ -22,16 +22,12 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
     'settings': GlobalKey(),
   };
 
-  final Map<String, GlobalKey<_DwellButtonState>> _dwellButtonKeys = {
-    'phone': GlobalKey<_DwellButtonState>(),
-    'messages': GlobalKey<_DwellButtonState>(),
-    'camera': GlobalKey<_DwellButtonState>(),
-    'settings': GlobalKey<_DwellButtonState>(),
-  };
-
   String? _selectedApp;
   StreamSubscription<Offset>? _gazeSubscription;
   String? _currentHoveredButton;
+
+  // Add this: Track current gaze position for debugging
+  Offset? _currentGazePoint;
 
   @override
   void initState() {
@@ -41,6 +37,9 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
 
   void _startGazeTracking() {
     _gazeSubscription = widget.gazeStream.listen((gazePoint) {
+      setState(() {
+        _currentGazePoint = gazePoint; // Store for debugging
+      });
       _checkButtonHover(gazePoint);
     });
   }
@@ -55,16 +54,23 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
       }
     }
 
-    // Update button states
     if (hoveredButton != _currentHoveredButton) {
-      // Stop dwell on previously hovered button
       if (_currentHoveredButton != null) {
-        _dwellButtonKeys[_currentHoveredButton]?.currentState?.stopDwell();
+        final key = _buttonKeys[_currentHoveredButton];
+        final context = key?.currentContext;
+        if (context != null) {
+          final state = context.findAncestorStateOfType<DwellButtonState>();
+          state?.stopDwell();
+        }
       }
 
-      // Start dwell on newly hovered button
       if (hoveredButton != null) {
-        _dwellButtonKeys[hoveredButton]?.currentState?.startDwell();
+        final key = _buttonKeys[hoveredButton];
+        final context = key?.currentContext;
+        if (context != null) {
+          final state = context.findAncestorStateOfType<DwellButtonState>();
+          state?.startDwell();
+        }
       }
 
       _currentHoveredButton = hoveredButton;
@@ -120,116 +126,144 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
         title: const Text('Select App with Eyes'),
         backgroundColor: Colors.blue,
       ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Column(
-                  children: [
-                    Icon(Icons.visibility, color: Colors.white70, size: 32),
-                    SizedBox(height: 8),
-                    Text(
-                      'Look at any app for 2 seconds to select it',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                      ),
-                      textAlign: TextAlign.center,
+      body: Stack( // Changed to Stack to add gaze cursor overlay
+        children: [
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 30),
-
-              Expanded(
-                child: GridView.count(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 20,
-                  crossAxisSpacing: 20,
-                  children: [
-                    Container(
-                      key: _buttonKeys['phone'],
-                      child: DwellButton(
-                        key: _dwellButtonKeys['phone'],
-                        containerKey: _buttonKeys['phone']!,
-                        label: 'Phone',
-                        icon: Icons.phone,
-                        color: Colors.green,
-                        onSelected: () => _onAppSelected('Phone'),
-                      ),
-                    ),
-                    Container(
-                      key: _buttonKeys['messages'],
-                      child: DwellButton(
-                        key: _dwellButtonKeys['messages'],
-                        containerKey: _buttonKeys['messages']!,
-                        label: 'Messages',
-                        icon: Icons.message,
-                        color: Colors.blue,
-                        onSelected: () => _onAppSelected('Messages'),
-                      ),
-                    ),
-                    Container(
-                      key: _buttonKeys['camera'],
-                      child: DwellButton(
-                        key: _dwellButtonKeys['camera'],
-                        containerKey: _buttonKeys['camera']!,
-                        label: 'Camera',
-                        icon: Icons.camera_alt,
-                        color: Colors.purple,
-                        onSelected: () => _onAppSelected('Camera'),
-                      ),
-                    ),
-                    Container(
-                      key: _buttonKeys['settings'],
-                      child: DwellButton(
-                        key: _dwellButtonKeys['settings'],
-                        containerKey: _buttonKeys['settings']!,
-                        label: 'Settings',
-                        icon: Icons.settings,
-                        color: Colors.orange,
-                        onSelected: () => _onAppSelected('Settings'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              if (_selectedApp != null)
-                Container(
-                  margin: const EdgeInsets.only(top: 20),
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.green, width: 2),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.check_circle, color: Colors.green),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Opening $_selectedApp...',
-                        style: const TextStyle(
-                          color: Colors.green,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                    child: Column(
+                      children: [
+                        const Icon(Icons.visibility, color: Colors.white70, size: 32),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Look at any app for 2 seconds to select it',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 16,
+                          ),
+                          textAlign: TextAlign.center,
                         ),
-                      ),
-                    ],
+                        // DEBUG: Show gaze coordinates
+                        if (_currentGazePoint != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Gaze: (${_currentGazePoint!.dx.toInt()}, ${_currentGazePoint!.dy.toInt()})',
+                            style: const TextStyle(
+                              color: Colors.yellowAccent,
+                              fontSize: 12,
+                            ),
+                          ),
+                          Text(
+                            'Hovering: ${_currentHoveredButton ?? "none"}',
+                            style: const TextStyle(
+                              color: Colors.cyanAccent,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-            ],
+                  const SizedBox(height: 30),
+
+                  Expanded(
+                    child: GridView.count(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 20,
+                      crossAxisSpacing: 20,
+                      children: [
+                        DwellButton(
+                          key: _buttonKeys['phone'],
+                          containerKey: _buttonKeys['phone']!,
+                          label: 'Phone',
+                          icon: Icons.phone,
+                          color: Colors.green,
+                          onSelected: () => _onAppSelected('Phone'),
+                        ),
+                        DwellButton(
+                          key: _buttonKeys['messages'],
+                          containerKey: _buttonKeys['messages']!,
+                          label: 'Messages',
+                          icon: Icons.message,
+                          color: Colors.blue,
+                          onSelected: () => _onAppSelected('Messages'),
+                        ),
+                        DwellButton(
+                          key: _buttonKeys['camera'],
+                          containerKey: _buttonKeys['camera']!,
+                          label: 'Camera',
+                          icon: Icons.camera_alt,
+                          color: Colors.purple,
+                          onSelected: () => _onAppSelected('Camera'),
+                        ),
+                        DwellButton(
+                          key: _buttonKeys['settings'],
+                          containerKey: _buttonKeys['settings']!,
+                          label: 'Settings',
+                          icon: Icons.settings,
+                          color: Colors.orange,
+                          onSelected: () => _onAppSelected('Settings'),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  if (_selectedApp != null)
+                    Container(
+                      margin: const EdgeInsets.only(top: 20),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.green, width: 2),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.check_circle, color: Colors.green),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Opening $_selectedApp...',
+                            style: const TextStyle(
+                              color: Colors.green,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
-        ),
+
+          // DEBUG: Gaze cursor overlay
+          if (_currentGazePoint != null)
+            Positioned(
+              left: _currentGazePoint!.dx - 20,
+              top: _currentGazePoint!.dy - 20,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.red, width: 2),
+                ),
+                child: const Center(
+                  child: Icon(Icons.add, color: Colors.red, size: 20),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

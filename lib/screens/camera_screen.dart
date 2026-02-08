@@ -6,8 +6,7 @@ import '../services/face_detector_service.dart';
 import '../services/gaze_tracker.dart';
 import '../widgets/face_detector_painter.dart';
 import '../widgets/gaze_cursor_painter.dart';
-import '../models/calibration_point.dart';
-import 'calibration_screen.dart';
+import 'settings_screen.dart';
 import 'app_selector_with_gaze.dart';
 
 class CameraScreen extends StatefulWidget {
@@ -37,9 +36,11 @@ class _CameraScreenState extends State<CameraScreen> {
   // Gaze tracking
   GazeData? _currentGaze;
 
-  // Calibration
-  bool _showCalibration = false;
-  List<CalibrationPoint> _calibrationPoints = [];
+  // Auto-calibration state
+  bool _needsCalibration = true;
+  bool _showCalibrationInstructions = true;
+  int _faceDetectedFrames = 0;
+  static const int _requiredStableFrames = 30; // ~1 second of stable detection
 
   @override
   void initState() {
@@ -108,8 +109,43 @@ class _CameraScreenState extends State<CameraScreen> {
       final screenSize = MediaQuery.of(context).size;
       final imageSize = Size(image.width.toDouble(), image.height.toDouble());
 
+      // Auto-calibration logic
+      if (_needsCalibration && faces.isNotEmpty) {
+        final face = faces.first;
+        final faceSize = face.boundingBox.width * face.boundingBox.height;
+        final imageArea = imageSize.width * imageSize.height;
+        final faceRatio = faceSize / imageArea;
+
+        // Check if face is at good distance (10-25% of image)
+        if (faceRatio > 0.10 && faceRatio < 0.25) {
+          _faceDetectedFrames++;
+
+          if (_faceDetectedFrames >= _requiredStableFrames) {
+            // Auto-calibrate!
+            _gazeTracker.calibrate(face, imageSize, screenSize);
+            setState(() {
+              _needsCalibration = false;
+              _showCalibrationInstructions = false;
+            });
+
+            // Show success message
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('✓ Calibrated! Move your head to control the cursor.'),
+                  backgroundColor: Colors.green,
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            }
+          }
+        } else {
+          _faceDetectedFrames = 0;
+        }
+      }
+
       GazeData? gazeData;
-      if (faces.isNotEmpty) {
+      if (faces.isNotEmpty && !_needsCalibration) {
         gazeData = _gazeTracker.calculateGaze(
           faces.first,
           imageSize,
@@ -121,7 +157,16 @@ class _CameraScreenState extends State<CameraScreen> {
         _faces = faces;
         _imageSize = imageSize;
         _currentGaze = gazeData;
-        _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
+
+        if (_needsCalibration && faces.isNotEmpty) {
+          final face = faces.first;
+          final faceSize = face.boundingBox.width * face.boundingBox.height;
+          final imageArea = imageSize.width * imageSize.height;
+          final faceRatio = (faceSize / imageArea * 100).toInt();
+          _debugInfo = 'Face: $faceRatio% | Frames: $_faceDetectedFrames/$_requiredStableFrames';
+        } else {
+          _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
+        }
       });
     } catch (e) {
       print('✗ Error: $e');
@@ -130,38 +175,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  void _startCalibration() {
-    final screenSize = MediaQuery.of(context).size;
+  void _recalibrate() {
     setState(() {
-      _calibrationPoints = _gazeTracker.createCalibrationPoints(screenSize);
-      _showCalibration = true;
+      _needsCalibration = true;
+      _showCalibrationInstructions = true;
+      _faceDetectedFrames = 0;
     });
-  }
-
-  void _onPointCalibrated(int index) {
-    if (_faces.isNotEmpty && _imageSize != null) {
-      final screenSize = MediaQuery.of(context).size;
-      _gazeTracker.addCalibrationData(
-        index,
-        _faces.first,
-        _imageSize!,
-        screenSize,
-      );
-    }
-  }
-
-  void _onCalibrationComplete() {
-    setState(() {
-      _showCalibration = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('✓ Calibration complete! Tap Apps to try selection.'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 3),
-      ),
-    );
+    _gazeTracker.reset();
   }
 
   void _openAppSelector() {
@@ -193,16 +213,26 @@ class _CameraScreenState extends State<CameraScreen> {
         title: const Text('Eye Control App'),
         backgroundColor: Colors.blue,
         actions: [
-          if (_isInitialized && !_showCalibration)
+          if (_isInitialized && !_needsCalibration)
             IconButton(
-              icon: Icon(
-                _gazeTracker.isCalibrated ? Icons.check_circle : Icons.settings,
-                color: _gazeTracker.isCalibrated ? Colors.green : Colors.white,
-              ),
-              onPressed: _startCalibration,
-              tooltip: 'Calibrate',
+              icon: const Icon(Icons.tune),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SettingsScreen(gazeTracker: _gazeTracker),
+                  ),
+                );
+              },
+              tooltip: 'Settings',
             ),
-          if (_isInitialized && _gazeTracker.isCalibrated && !_showCalibration)
+          if (_isInitialized && !_needsCalibration)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _recalibrate,
+              tooltip: 'Recalibrate',
+            ),
+          if (_isInitialized && !_needsCalibration)
             IconButton(
               icon: const Icon(Icons.apps),
               onPressed: _openAppSelector,
@@ -230,7 +260,7 @@ class _CameraScreenState extends State<CameraScreen> {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 16),
-            Text('Initializing...'),
+            Text('Initializing camera...'),
           ],
         ),
       );
@@ -240,13 +270,15 @@ class _CameraScreenState extends State<CameraScreen> {
 
     return Stack(
       children: [
+        // Camera preview
         SizedBox(
           width: size.width,
           height: size.height,
           child: CameraPreview(_cameraController!),
         ),
 
-        if (_imageSize != null && !_showCalibration)
+        // Face detection overlay
+        if (_imageSize != null)
           CustomPaint(
             size: size,
             painter: FaceDetectorPainter(
@@ -257,7 +289,8 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-        if (!_showCalibration)
+        // Gaze cursor (only after calibration)
+        if (!_needsCalibration && _currentGaze != null)
           CustomPaint(
             size: size,
             painter: GazeCursorPainter(
@@ -266,14 +299,132 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-        if (_showCalibration)
-          CalibrationScreen(
-            calibrationPoints: _calibrationPoints,
-            onPointCalibrated: _onPointCalibrated,
-            onCalibrationComplete: _onCalibrationComplete,
+        // Calibration instructions overlay
+        if (_showCalibrationInstructions)
+          Container(
+            color: Colors.black.withOpacity(0.8),
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.center_focus_strong,
+                      size: 80,
+                      color: Colors.white,
+                    ),
+                    const SizedBox(height: 30),
+                    const Text(
+                      'Setup Instructions',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Column(
+                        children: [
+                          Text(
+                            '1. Hold phone 20-30 cm from face',
+                            style: TextStyle(color: Colors.white, fontSize: 18),
+                            textAlign: TextAlign.center,
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            '2. Ensure your whole head is visible',
+                            style: TextStyle(color: Colors.white, fontSize: 18),
+                            textAlign: TextAlign.center,
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            '3. Hold still for 1 second',
+                            style: TextStyle(color: Colors.white, fontSize: 18),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                    if (_faces.isNotEmpty) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: _faceDetectedFrames > 0
+                              ? Colors.green.withOpacity(0.3)
+                              : Colors.orange.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _faceDetectedFrames > 0 ? Icons.check_circle : Icons.warning,
+                              color: _faceDetectedFrames > 0 ? Colors.green : Colors.orange,
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              _faceDetectedFrames > 0
+                                  ? 'Good position! Hold still...'
+                                  : 'Adjust distance (too close/far)',
+                              style: TextStyle(
+                                color: _faceDetectedFrames > 0 ? Colors.green : Colors.orange,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 15),
+                      SizedBox(
+                        width: 200,
+                        child: LinearProgressIndicator(
+                          value: _faceDetectedFrames / _requiredStableFrames,
+                          backgroundColor: Colors.white.withOpacity(0.3),
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
+                          minHeight: 8,
+                        ),
+                      ),
+                    ] else ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.search, color: Colors.red),
+                            SizedBox(width: 10),
+                            Text(
+                              'Looking for face...',
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
           ),
 
-        if (!_showCalibration)
+        // Status bar (after calibration)
+        if (!_showCalibrationInstructions)
           Positioned(
             top: 20,
             left: 20,
@@ -284,45 +435,38 @@ class _CameraScreenState extends State<CameraScreen> {
                 color: Colors.black.withOpacity(0.7),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Icon(
-                        _faces.isNotEmpty ? Icons.face : Icons.face_outlined,
+                  Icon(
+                    _faces.isNotEmpty ? Icons.face : Icons.face_outlined,
+                    color: _faces.isNotEmpty ? Colors.green : Colors.orange,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _faces.isNotEmpty ? '✓ Tracking' : 'Searching...',
+                      style: TextStyle(
                         color: _faces.isNotEmpty ? Colors.green : Colors.orange,
-                        size: 20,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _faces.isNotEmpty ? '✓ Tracking' : 'Searching...',
-                          style: TextStyle(
-                            color: _faces.isNotEmpty ? Colors.green : Colors.orange,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'READY',
+                      style: TextStyle(
+                        color: Colors.green,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
                       ),
-                      if (_gazeTracker.isCalibrated)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.green.withOpacity(0.3),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'READY',
-                            style: TextStyle(
-                              color: Colors.green,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                    ],
+                    ),
                   ),
                 ],
               ),

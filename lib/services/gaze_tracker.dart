@@ -1,7 +1,6 @@
 import 'dart:ui';
 import 'dart:math' as math;
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import '../models/calibration_point.dart';
 
 class GazeData {
   final Offset gazePoint;
@@ -16,90 +15,168 @@ class GazeData {
 }
 
 class GazeTracker {
+  // Motion history for velocity-based smoothing (like optical flow)
+  final List<Offset> _motionHistory = [];
   final List<Offset> _gazeHistory = [];
-  final int _historySize = 10;
+  final int _motionHistorySize = 3;
+  final int _gazeHistorySize = 8;
 
-  final List<CalibrationPoint> _calibrationPoints = [];
-  bool _isCalibrated = false;
+  // Reference tracking (EVA style)
+  Offset? _referenceFaceCenter;
+  List<Offset>? _referenceLandmarks; // Multiple tracking points
+  double? _referenceFaceWidth;
+  Size? _referenceScreenSize;
 
-  Size? _screenSize;
+  // Sensitivity (EVA uses 2.0-4.0 range)
+  double _sensitivityX = 3.0;
+  double _sensitivityY = 3.0;
+
+  // Dead zone (prevents micro-jitter)
+  final double _deadZoneRadius = 3.0;
+
+  // Velocity damping (smooths sudden movements)
+  double _velocityDamping = 0.7;
+
+  // Distance compensation
+  bool _useDistanceCompensation = true;
 
   void setScreenSize(Size size) {
-    _screenSize = size;
+    _referenceScreenSize = size;
   }
 
-  List<CalibrationPoint> createCalibrationPoints(Size screenSize) {
-    final marginX = screenSize.width * 0.15;
-    final marginY = screenSize.height * 0.15;
-
-    final points = [
-      CalibrationPoint(x: screenSize.width / 2, y: screenSize.height / 2, index: 0),
-      CalibrationPoint(x: marginX, y: marginY, index: 1),
-      CalibrationPoint(x: screenSize.width - marginX, y: marginY, index: 2),
-      CalibrationPoint(x: marginX, y: screenSize.height - marginY, index: 3),
-      CalibrationPoint(x: screenSize.width - marginX, y: screenSize.height - marginY, index: 4),
-      CalibrationPoint(x: screenSize.width / 2, y: marginY, index: 5),
-      CalibrationPoint(x: screenSize.width / 2, y: screenSize.height - marginY, index: 6),
-      CalibrationPoint(x: marginX, y: screenSize.height / 2, index: 7),
-      CalibrationPoint(x: screenSize.width - marginX, y: screenSize.height / 2, index: 8),
-    ];
-
-    _calibrationPoints.clear();
-    _calibrationPoints.addAll(points);
-    _isCalibrated = false;
-
-    return points;
-  }
-
-  void addCalibrationData(int pointIndex, Face face, Size imageSize, Size screenSize) {
-    if (pointIndex >= _calibrationPoints.length) return;
-
+  void calibrate(Face face, Size imageSize, Size screenSize) {
+    // EVA approach: Store multiple landmark points for robust tracking
     final leftEye = face.landmarks[FaceLandmarkType.leftEye];
     final rightEye = face.landmarks[FaceLandmarkType.rightEye];
+    final nose = face.landmarks[FaceLandmarkType.noseBase];
 
-    if (leftEye != null && rightEye != null) {
-      final eyeCenterX = (leftEye.position.x + rightEye.position.x) / 2;
-      final eyeCenterY = (leftEye.position.y + rightEye.position.y) / 2;
+    _referenceLandmarks = [];
 
-      _calibrationPoints[pointIndex].calibrate(eyeCenterX, eyeCenterY);
-      _isCalibrated = _calibrationPoints.every((p) => p.isCalibrated);
+    if (leftEye != null && rightEye != null && nose != null) {
+      // Store multiple reference points (EVA style)
+      _referenceLandmarks!.add(Offset(leftEye.position.x.toDouble(), leftEye.position.y.toDouble()));
+      _referenceLandmarks!.add(Offset(rightEye.position.x.toDouble(), rightEye.position.y.toDouble()));
+      _referenceLandmarks!.add(Offset(nose.position.x.toDouble(), nose.position.y.toDouble()));
 
-      print('✓ Point $pointIndex: eye center ($eyeCenterX, $eyeCenterY) → screen (${_calibrationPoints[pointIndex].x}, ${_calibrationPoints[pointIndex].y})');
+      // Calculate weighted center
+      _referenceFaceCenter = Offset(
+        (_referenceLandmarks![0].dx + _referenceLandmarks![1].dx + _referenceLandmarks![2].dx) / 3,
+        (_referenceLandmarks![0].dy + _referenceLandmarks![1].dy + _referenceLandmarks![2].dy) / 3,
+      );
+
+      _referenceFaceWidth = (rightEye.position.x - leftEye.position.x).toDouble();
+    } else {
+      // Fallback to face center
+      _referenceFaceCenter = Offset(
+        face.boundingBox.left + face.boundingBox.width / 2,
+        face.boundingBox.top + face.boundingBox.height / 2,
+      );
+      _referenceFaceWidth = face.boundingBox.width;
     }
+
+    _referenceScreenSize = screenSize;
+    _gazeHistory.clear();
+    _motionHistory.clear();
+
+    print('✓ Calibrated with ${_referenceLandmarks?.length ?? 0} tracking points');
   }
 
-  bool get isCalibrated => _isCalibrated;
-  List<CalibrationPoint> get calibrationPoints => _calibrationPoints;
+  bool get isCalibrated => _referenceFaceCenter != null;
 
   GazeData? calculateGaze(Face face, Size imageSize, Size screenSize) {
-    if (_screenSize == null) {
-      _screenSize = screenSize;
+    if (_referenceScreenSize == null) {
+      _referenceScreenSize = screenSize;
     }
 
-    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
-    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
-
-    if (leftEye == null || rightEye == null) {
+    if (_referenceFaceCenter == null) {
       return null;
     }
 
-    final eyeCenterX = (leftEye.position.x + rightEye.position.x) / 2;
-    final eyeCenterY = (leftEye.position.y + rightEye.position.y) / 2;
+    // Calculate current position using same landmarks
+    Offset currentFaceCenter;
+    double currentFaceWidth;
 
-    Offset gazePoint;
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
+    final nose = face.landmarks[FaceLandmarkType.noseBase];
 
-    if (_isCalibrated) {
-      gazePoint = _interpolateGaze(eyeCenterX, eyeCenterY, screenSize);
+    if (leftEye != null && rightEye != null && nose != null) {
+      // Use same weighted average as calibration
+      currentFaceCenter = Offset(
+        (leftEye.position.x + rightEye.position.x + nose.position.x.toDouble()) / 3,
+        (leftEye.position.y + rightEye.position.y + nose.position.y.toDouble()) / 3,
+      );
+      currentFaceWidth = (rightEye.position.x - leftEye.position.x).toDouble();
     } else {
-      final scaleX = screenSize.width / imageSize.height;
-      final scaleY = screenSize.height / imageSize.width;
-      final mappedX = screenSize.width - (eyeCenterX * scaleX);
-      final mappedY = eyeCenterY * scaleY;
-      gazePoint = Offset(mappedX, mappedY);
+      currentFaceCenter = Offset(
+        face.boundingBox.left + face.boundingBox.width / 2,
+        face.boundingBox.top + face.boundingBox.height / 2,
+      );
+      currentFaceWidth = face.boundingBox.width;
     }
 
-    final smoothedGaze = _applySmoothing(gazePoint);
-    final confidence = _isCalibrated ? 0.95 : 0.7;
+    // Calculate displacement (EVA's core calculation)
+    double deltaX = currentFaceCenter.dx - _referenceFaceCenter!.dx;
+    double deltaY = currentFaceCenter.dy - _referenceFaceCenter!.dy;
+
+    // Distance compensation (EVA adjusts for head distance changes)
+    double distanceCompensation = 1.0;
+    if (_useDistanceCompensation && _referenceFaceWidth != null && _referenceFaceWidth! > 0) {
+      distanceCompensation = _referenceFaceWidth! / currentFaceWidth;
+      distanceCompensation = distanceCompensation.clamp(0.7, 1.5);
+    }
+
+    // Dead zone (EVA uses this to prevent jitter)
+    final movementMagnitude = math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    if (movementMagnitude < _deadZoneRadius) {
+      deltaX = 0;
+      deltaY = 0;
+    }
+
+    // Store motion vector for velocity-based smoothing
+    _motionHistory.add(Offset(deltaX, deltaY));
+    if (_motionHistory.length > _motionHistorySize) {
+      _motionHistory.removeAt(0);
+    }
+
+    // Calculate average motion (optical flow approximation)
+    Offset avgMotion = Offset.zero;
+    if (_motionHistory.isNotEmpty) {
+      double sumX = 0, sumY = 0;
+      for (final motion in _motionHistory) {
+        sumX += motion.dx;
+        sumY += motion.dy;
+      }
+      avgMotion = Offset(sumX / _motionHistory.length, sumY / _motionHistory.length);
+    }
+
+    // Apply velocity damping (EVA smoothing technique)
+    deltaX = avgMotion.dx * _velocityDamping;
+    deltaY = avgMotion.dy * _velocityDamping;
+
+    // Apply sensitivity with distance compensation
+    final adjustedSensitivityX = _sensitivityX * distanceCompensation;
+    final adjustedSensitivityY = _sensitivityY * distanceCompensation;
+
+    // Map to screen coordinates (EVA's coordinate transformation)
+    final screenCenterX = screenSize.width / 2;
+    final screenCenterY = screenSize.height / 2;
+
+    // Invert X for natural movement (move head right → cursor moves right)
+    Offset gazePoint = Offset(
+      screenCenterX - (deltaX * adjustedSensitivityX),
+      screenCenterY + (deltaY * adjustedSensitivityY),
+    );
+
+    // Clamp to screen bounds
+    gazePoint = Offset(
+      gazePoint.dx.clamp(0, screenSize.width),
+      gazePoint.dy.clamp(0, screenSize.height),
+    );
+
+    // Final exponential smoothing (EVA's last smoothing stage)
+    final smoothedGaze = _applyExponentialSmoothing(gazePoint);
+    final confidence = 0.95;
 
     return GazeData(
       gazePoint: smoothedGaze,
@@ -108,66 +185,55 @@ class GazeTracker {
     );
   }
 
-  Offset _interpolateGaze(double eyeX, double eyeY, Size screenSize) {
-    final distances = _calibrationPoints.map((point) {
-      final dx = point.eyeCenterX! - eyeX;
-      final dy = point.eyeCenterY! - eyeY;
-      final dist = math.sqrt(dx * dx + dy * dy);
-      return {'point': point, 'distance': dist};
-    }).toList()
-      ..sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
-
-    double totalWeight = 0;
-    double weightedX = 0;
-    double weightedY = 0;
-
-    for (int i = 0; i < math.min(4, distances.length); i++) {
-      final data = distances[i];
-      final point = data['point'] as CalibrationPoint;
-      final distance = data['distance'] as double;
-
-      final weight = distance > 0 ? 1 / math.pow(distance, 2) : 1000;
-
-      totalWeight += weight;
-      weightedX += point.x * weight;
-      weightedY += point.y * weight;
-    }
-
-    if (totalWeight > 0) {
-      return Offset(
-        (weightedX / totalWeight).clamp(0, screenSize.width),
-        (weightedY / totalWeight).clamp(0, screenSize.height),
-      );
-    }
-
-    return Offset(screenSize.width / 2, screenSize.height / 2);
-  }
-
-  Offset _applySmoothing(Offset point) {
+  Offset _applyExponentialSmoothing(Offset point) {
     _gazeHistory.add(point);
-    if (_gazeHistory.length > _historySize) {
+    if (_gazeHistory.length > _gazeHistorySize) {
       _gazeHistory.removeAt(0);
     }
-    if (_gazeHistory.length < 3) return point;
 
-    double totalWeight = 0;
+    if (_gazeHistory.isEmpty) return point;
+
+    // Exponential moving average (higher weight to recent points)
     double weightedX = 0;
     double weightedY = 0;
+    double totalWeight = 0;
 
     for (int i = 0; i < _gazeHistory.length; i++) {
-      final weight = math.pow(1.3, i).toDouble();
+      final weight = math.pow(1.6, i).toDouble(); // Slightly more aggressive than before
       final p = _gazeHistory[i];
-      totalWeight += weight;
+
       weightedX += p.dx * weight;
       weightedY += p.dy * weight;
+      totalWeight += weight;
     }
 
     return Offset(weightedX / totalWeight, weightedY / totalWeight);
   }
 
+  void setSensitivity(double x, double y) {
+    _sensitivityX = x;
+    _sensitivityY = y;
+  }
+
+  void setVelocityDamping(double damping) {
+    _velocityDamping = damping.clamp(0.1, 1.0);
+  }
+
+  void setDistanceCompensation(bool enabled) {
+    _useDistanceCompensation = enabled;
+  }
+
   void reset() {
     _gazeHistory.clear();
-    _calibrationPoints.clear();
-    _isCalibrated = false;
+    _motionHistory.clear();
+    _referenceFaceCenter = null;
+    _referenceLandmarks = null;
+    _referenceFaceWidth = null;
   }
+
+  // Getters
+  double get sensitivityX => _sensitivityX;
+  double get sensitivityY => _sensitivityY;
+  double get velocityDamping => _velocityDamping;
+  bool get distanceCompensationEnabled => _useDistanceCompensation;
 }
