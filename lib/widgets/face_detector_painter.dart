@@ -1,7 +1,6 @@
-import 'dart:ui' as ui;
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:camera/camera.dart';
 
 class FaceDetectorPainter extends CustomPainter {
   final List<Face> faces;
@@ -25,26 +24,20 @@ class FaceDetectorPainter extends CustomPainter {
 
     final Paint landmarkPaint = Paint()
       ..style = PaintingStyle.fill
-      ..color = Colors.red;
-
-    final Paint eyePaint = Paint()
-      ..style = PaintingStyle.fill
       ..color = Colors.blue;
 
     for (final Face face in faces) {
-      // Draw bounding box
+      final left = translateX(face.boundingBox.left, size);
+      final top = translateY(face.boundingBox.top, size);
+      final right = translateX(face.boundingBox.right, size);
+      final bottom = translateY(face.boundingBox.bottom, size);
+
       canvas.drawRect(
-        Rect.fromLTRB(
-          translateX(face.boundingBox.left, size),
-          translateY(face.boundingBox.top, size),
-          translateX(face.boundingBox.right, size),
-          translateY(face.boundingBox.bottom, size),
-        ),
+        Rect.fromLTRB(left, top, right, bottom),
         paint,
       );
 
-      // Draw landmarks
-      void paintLandmark(FaceLandmarkType type, Paint landmarkPaint) {
+      void paintLandmark(FaceLandmarkType type) {
         final landmark = face.landmarks[type];
         if (landmark != null) {
           canvas.drawCircle(
@@ -52,46 +45,31 @@ class FaceDetectorPainter extends CustomPainter {
               translateX(landmark.position.x.toDouble(), size),
               translateY(landmark.position.y.toDouble(), size),
             ),
-            type == FaceLandmarkType.leftEye || type == FaceLandmarkType.rightEye ? 8 : 5,
+            5,
             landmarkPaint,
           );
         }
       }
 
-      // Draw eyes (blue)
-      paintLandmark(FaceLandmarkType.leftEye, eyePaint);
-      paintLandmark(FaceLandmarkType.rightEye, eyePaint);
-
-      // Draw other landmarks (red)
-      paintLandmark(FaceLandmarkType.noseBase, landmarkPaint);
-      paintLandmark(FaceLandmarkType.leftMouth, landmarkPaint);
-      paintLandmark(FaceLandmarkType.rightMouth, landmarkPaint);
+      paintLandmark(FaceLandmarkType.leftEye);
+      paintLandmark(FaceLandmarkType.rightEye);
     }
   }
 
   double translateX(double x, Size size) {
     switch (rotation) {
-      case InputImageRotation.rotation90deg:
-        return x * size.width / imageSize.height;
       case InputImageRotation.rotation270deg:
         return size.width - x * size.width / imageSize.height;
-      case InputImageRotation.rotation0deg:
-      case InputImageRotation.rotation180deg:
-        if (cameraLensDirection == CameraLensDirection.front) {
-          return size.width - x * size.width / imageSize.width;
-        } else {
-          return x * size.width / imageSize.width;
-        }
+      default:
+        return x * size.width / imageSize.width;
     }
   }
 
   double translateY(double y, Size size) {
     switch (rotation) {
-      case InputImageRotation.rotation90deg:
       case InputImageRotation.rotation270deg:
         return y * size.height / imageSize.width;
-      case InputImageRotation.rotation0deg:
-      case InputImageRotation.rotation180deg:
+      default:
         return y * size.height / imageSize.height;
     }
   }

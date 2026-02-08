@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:face_detection_tflite/face_detection_tflite.dart';
-import 'dart:typed_data';
-import '../services/iris_detector_service.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import '../services/face_detector_service.dart';
 import '../services/gaze_tracker.dart';
-import '../utils/camera_image_converter.dart';
-import '../widgets/iris_painter.dart';
+import '../widgets/face_detector_painter.dart';
 import '../widgets/gaze_cursor_painter.dart';
 import '../models/calibration_point.dart';
 import 'calibration_screen.dart';
-import 'app_selector_screen.dart';
+import 'app_selector_with_gaze.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
@@ -27,16 +25,14 @@ class _CameraScreenState extends State<CameraScreen> {
   String _errorMessage = '';
 
   // Face detection
-  final IrisDetectorService _irisDetector = IrisDetectorService();
+  final FaceDetectorService _faceDetectorService = FaceDetectorService();
   final GazeTracker _gazeTracker = GazeTracker();
   List<Face> _faces = [];
   bool _isDetecting = false;
+  Size? _imageSize;
   int _frameCount = 0;
   String _debugInfo = '';
   CameraDescription? _camera;
-
-  // Actual processed image size
-  Size _processedImageSize = const Size(640, 480);
 
   // Gaze tracking
   GazeData? _currentGaze;
@@ -63,8 +59,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     try {
-      await _irisDetector.initialize();
-
       _cameras = await availableCameras();
 
       if (_cameras == null || _cameras!.isEmpty) {
@@ -81,9 +75,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
       _cameraController = CameraController(
         _camera!,
-        ResolutionPreset.medium, // Use medium for consistent size
+        ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: ImageFormatGroup.nv21,
       );
 
       await _cameraController!.initialize();
@@ -110,33 +104,24 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       _frameCount++;
 
-      // Convert and get actual dimensions
-      final conversion = CameraImageConverter.convertCameraImageToJpeg(image);
-      final imageBytes = conversion['bytes'] as Uint8List;
-      final actualWidth = conversion['width'] as int;
-      final actualHeight = conversion['height'] as int;
-
-      // Update processed image size
-      _processedImageSize = Size(actualWidth.toDouble(), actualHeight.toDouble());
-
-      // Detect faces
-      final faces = await _irisDetector.detectFaces(imageBytes);
-
+      final faces = await _faceDetectorService.detectFaces(image);
       final screenSize = MediaQuery.of(context).size;
+      final imageSize = Size(image.width.toDouble(), image.height.toDouble());
 
       GazeData? gazeData;
-      if (faces.isNotEmpty && faces.first.eyes != null) {
+      if (faces.isNotEmpty) {
         gazeData = _gazeTracker.calculateGaze(
           faces.first,
-          _processedImageSize,
+          imageSize,
           screenSize,
         );
       }
 
       setState(() {
         _faces = faces;
+        _imageSize = imageSize;
         _currentGaze = gazeData;
-        _debugInfo = 'Frame: $_frameCount | ${actualWidth}x${actualHeight}';
+        _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
       });
     } catch (e) {
       print('✗ Error: $e');
@@ -154,12 +139,12 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _onPointCalibrated(int index) {
-    if (_faces.isNotEmpty) {
+    if (_faces.isNotEmpty && _imageSize != null) {
       final screenSize = MediaQuery.of(context).size;
       _gazeTracker.addCalibrationData(
         index,
         _faces.first,
-        _processedImageSize,
+        _imageSize!,
         screenSize,
       );
     }
@@ -172,7 +157,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('✓ Calibration complete! Try the app selector.'),
+        content: Text('✓ Calibration complete! Tap Apps to try selection.'),
         backgroundColor: Colors.green,
         duration: Duration(seconds: 3),
       ),
@@ -183,8 +168,11 @@ class _CameraScreenState extends State<CameraScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => AppSelectorScreen(
-          onGazeUpdate: (gazePoint) {},
+        builder: (context) => AppSelectorWithGaze(
+          gazeStream: Stream.periodic(
+            const Duration(milliseconds: 100),
+                (_) => _currentGaze?.gazePoint,
+          ).where((point) => point != null).cast<Offset>(),
         ),
       ),
     );
@@ -194,7 +182,7 @@ class _CameraScreenState extends State<CameraScreen> {
   void dispose() {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
-    _irisDetector.dispose();
+    _faceDetectorService.dispose();
     super.dispose();
   }
 
@@ -202,7 +190,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Eye Control'),
+        title: const Text('Eye Control App'),
         backgroundColor: Colors.blue,
         actions: [
           if (_isInitialized && !_showCalibration)
@@ -235,7 +223,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return _buildErrorWidget(_errorMessage);
     }
 
-    if (!_isInitialized || _cameraController == null) {
+    if (!_isInitialized || _cameraController == null || _camera == null) {
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -252,25 +240,23 @@ class _CameraScreenState extends State<CameraScreen> {
 
     return Stack(
       children: [
-        // Camera preview
         SizedBox(
           width: size.width,
           height: size.height,
           child: CameraPreview(_cameraController!),
         ),
 
-        // Face/Iris overlay
-        if (!_showCalibration)
+        if (_imageSize != null && !_showCalibration)
           CustomPaint(
             size: size,
-            painter: IrisPainter(
+            painter: FaceDetectorPainter(
               faces: _faces,
-              imageSize: _processedImageSize,
-              canvasSize: size,
+              imageSize: _imageSize!,
+              rotation: InputImageRotation.rotation270deg,
+              cameraLensDirection: _camera!.lensDirection,
             ),
           ),
 
-        // Gaze cursor
         if (!_showCalibration)
           CustomPaint(
             size: size,
@@ -280,7 +266,6 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-        // Calibration
         if (_showCalibration)
           CalibrationScreen(
             calibrationPoints: _calibrationPoints,
@@ -288,7 +273,6 @@ class _CameraScreenState extends State<CameraScreen> {
             onCalibrationComplete: _onCalibrationComplete,
           ),
 
-        // Status
         if (!_showCalibration)
           Positioned(
             top: 20,
@@ -314,9 +298,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          _faces.isNotEmpty && _faces.first.eyes != null
-                              ? '✓ Tracking'
-                              : 'Searching...',
+                          _faces.isNotEmpty ? '✓ Tracking' : 'Searching...',
                           style: TextStyle(
                             color: _faces.isNotEmpty ? Colors.green : Colors.orange,
                             fontSize: 16,
@@ -341,14 +323,6 @@ class _CameraScreenState extends State<CameraScreen> {
                           ),
                         ),
                     ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _debugInfo,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.7),
-                      fontSize: 11,
-                    ),
                   ),
                 ],
               ),

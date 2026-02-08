@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 
 class DwellButton extends StatefulWidget {
+  final GlobalKey containerKey;
   final String label;
   final IconData icon;
   final VoidCallback onSelected;
@@ -10,6 +11,7 @@ class DwellButton extends StatefulWidget {
 
   const DwellButton({
     Key? key,
+    required this.containerKey,
     required this.label,
     required this.icon,
     required this.onSelected,
@@ -46,7 +48,6 @@ class _DwellButtonState extends State<DwellButton>
       _progress = 0.0;
     });
 
-    // Progress animation
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(
       const Duration(milliseconds: 50),
@@ -65,7 +66,6 @@ class _DwellButtonState extends State<DwellButton>
       },
     );
 
-    // Complete dwell after duration
     _dwellTimer?.cancel();
     _dwellTimer = Timer(widget.dwellDuration, () {
       if (_isHovering) {
@@ -107,6 +107,7 @@ class _DwellButtonState extends State<DwellButton>
         return Transform.scale(
           scale: 1.0 + (_successController!.value * 0.1),
           child: Container(
+            key: widget.containerKey,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
               color: widget.color.withOpacity(0.2),
@@ -128,7 +129,6 @@ class _DwellButtonState extends State<DwellButton>
             ),
             child: Stack(
               children: [
-                // Progress indicator
                 if (_isHovering)
                   Positioned.fill(
                     child: ClipRRect(
@@ -143,7 +143,6 @@ class _DwellButtonState extends State<DwellButton>
                     ),
                   ),
 
-                // Button content
                 Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,

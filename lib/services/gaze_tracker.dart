@@ -1,6 +1,6 @@
 import 'dart:ui';
 import 'dart:math' as math;
-import 'package:face_detection_tflite/face_detection_tflite.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../models/calibration_point.dart';
 
 class GazeData {
@@ -23,14 +23,9 @@ class GazeTracker {
   bool _isCalibrated = false;
 
   Size? _screenSize;
-  Size? _imageSize;
 
   void setScreenSize(Size size) {
     _screenSize = size;
-  }
-
-  void setImageSize(Size size) {
-    _imageSize = size;
   }
 
   List<CalibrationPoint> createCalibrationPoints(Size screenSize) {
@@ -59,18 +54,17 @@ class GazeTracker {
   void addCalibrationData(int pointIndex, Face face, Size imageSize, Size screenSize) {
     if (pointIndex >= _calibrationPoints.length) return;
 
-    final leftIris = face.eyes?.leftEye?.irisCenter;
-    final rightIris = face.eyes?.rightEye?.irisCenter;
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
 
-    if (leftIris != null && rightIris != null) {
-      // Store raw iris coordinates (in image space)
-      final gazeX = (leftIris.x + rightIris.x) / 2;
-      final gazeY = (leftIris.y + rightIris.y) / 2;
+    if (leftEye != null && rightEye != null) {
+      final eyeCenterX = (leftEye.position.x + rightEye.position.x) / 2;
+      final eyeCenterY = (leftEye.position.y + rightEye.position.y) / 2;
 
-      _calibrationPoints[pointIndex].calibrate(gazeX, gazeY);
+      _calibrationPoints[pointIndex].calibrate(eyeCenterX, eyeCenterY);
       _isCalibrated = _calibrationPoints.every((p) => p.isCalibrated);
 
-      print('✓ Point $pointIndex: iris ($gazeX, $gazeY) → screen (${_calibrationPoints[pointIndex].x}, ${_calibrationPoints[pointIndex].y})');
+      print('✓ Point $pointIndex: eye center ($eyeCenterX, $eyeCenterY) → screen (${_calibrationPoints[pointIndex].x}, ${_calibrationPoints[pointIndex].y})');
     }
   }
 
@@ -78,29 +72,30 @@ class GazeTracker {
   List<CalibrationPoint> get calibrationPoints => _calibrationPoints;
 
   GazeData? calculateGaze(Face face, Size imageSize, Size screenSize) {
-    _imageSize = imageSize;
-    _screenSize = screenSize;
+    if (_screenSize == null) {
+      _screenSize = screenSize;
+    }
 
-    final leftIris = face.eyes?.leftEye?.irisCenter;
-    final rightIris = face.eyes?.rightEye?.irisCenter;
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
 
-    if (leftIris == null || rightIris == null) {
+    if (leftEye == null || rightEye == null) {
       return null;
     }
 
-    // Calculate average iris position in image coordinates
-    final irisX = (leftIris.x + rightIris.x) / 2;
-    final irisY = (leftIris.y + rightIris.y) / 2;
+    final eyeCenterX = (leftEye.position.x + rightEye.position.x) / 2;
+    final eyeCenterY = (leftEye.position.y + rightEye.position.y) / 2;
 
     Offset gazePoint;
 
     if (_isCalibrated) {
-      gazePoint = _interpolateGaze(irisX, irisY, screenSize);
+      gazePoint = _interpolateGaze(eyeCenterX, eyeCenterY, screenSize);
     } else {
-      // Simple proportional mapping as fallback
-      final scaleX = screenSize.width / imageSize.width;
-      final scaleY = screenSize.height / imageSize.height;
-      gazePoint = Offset(irisX * scaleX, irisY * scaleY);
+      final scaleX = screenSize.width / imageSize.height;
+      final scaleY = screenSize.height / imageSize.width;
+      final mappedX = screenSize.width - (eyeCenterX * scaleX);
+      final mappedY = eyeCenterY * scaleY;
+      gazePoint = Offset(mappedX, mappedY);
     }
 
     final smoothedGaze = _applySmoothing(gazePoint);
@@ -113,10 +108,10 @@ class GazeTracker {
     );
   }
 
-  Offset _interpolateGaze(double irisX, double irisY, Size screenSize) {
+  Offset _interpolateGaze(double eyeX, double eyeY, Size screenSize) {
     final distances = _calibrationPoints.map((point) {
-      final dx = point.eyeCenterX! - irisX;
-      final dy = point.eyeCenterY! - irisY;
+      final dx = point.eyeCenterX! - eyeX;
+      final dy = point.eyeCenterY! - eyeY;
       final dist = math.sqrt(dx * dx + dy * dy);
       return {'point': point, 'distance': dist};
     }).toList()
