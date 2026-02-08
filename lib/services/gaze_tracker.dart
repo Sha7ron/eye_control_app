@@ -16,36 +16,33 @@ class GazeData {
 }
 
 class GazeTracker {
-  // Smoothing buffer
   final List<Offset> _gazeHistory = [];
   final int _historySize = 10;
 
-  // Calibration data
   final List<CalibrationPoint> _calibrationPoints = [];
   bool _isCalibrated = false;
 
   Size? _screenSize;
+  Size? _imageSize;
 
   void setScreenSize(Size size) {
     _screenSize = size;
   }
 
-  // Create 9-point calibration
+  void setImageSize(Size size) {
+    _imageSize = size;
+  }
+
   List<CalibrationPoint> createCalibrationPoints(Size screenSize) {
     final marginX = screenSize.width * 0.15;
     final marginY = screenSize.height * 0.15;
 
     final points = [
-      // Center first (most important)
       CalibrationPoint(x: screenSize.width / 2, y: screenSize.height / 2, index: 0),
-
-      // Four corners
       CalibrationPoint(x: marginX, y: marginY, index: 1),
       CalibrationPoint(x: screenSize.width - marginX, y: marginY, index: 2),
       CalibrationPoint(x: marginX, y: screenSize.height - marginY, index: 3),
       CalibrationPoint(x: screenSize.width - marginX, y: screenSize.height - marginY, index: 4),
-
-      // Mid points
       CalibrationPoint(x: screenSize.width / 2, y: marginY, index: 5),
       CalibrationPoint(x: screenSize.width / 2, y: screenSize.height - marginY, index: 6),
       CalibrationPoint(x: marginX, y: screenSize.height / 2, index: 7),
@@ -59,36 +56,31 @@ class GazeTracker {
     return points;
   }
 
-  void addCalibrationData(int pointIndex, Face face, Size screenSize) {
+  void addCalibrationData(int pointIndex, Face face, Size imageSize, Size screenSize) {
     if (pointIndex >= _calibrationPoints.length) return;
 
-    // Get iris centers from both eyes
     final leftIris = face.eyes?.leftEye?.irisCenter;
     final rightIris = face.eyes?.rightEye?.irisCenter;
 
     if (leftIris != null && rightIris != null) {
-      // Average the iris positions for gaze point
+      // Store raw iris coordinates (in image space)
       final gazeX = (leftIris.x + rightIris.x) / 2;
       final gazeY = (leftIris.y + rightIris.y) / 2;
 
       _calibrationPoints[pointIndex].calibrate(gazeX, gazeY);
-
       _isCalibrated = _calibrationPoints.every((p) => p.isCalibrated);
 
-      print('✓ Calibration point $pointIndex: iris at ($gazeX, $gazeY) → screen (${_calibrationPoints[pointIndex].x}, ${_calibrationPoints[pointIndex].y})');
-      print('Progress: ${_calibrationPoints.where((p) => p.isCalibrated).length}/${_calibrationPoints.length}');
+      print('✓ Point $pointIndex: iris ($gazeX, $gazeY) → screen (${_calibrationPoints[pointIndex].x}, ${_calibrationPoints[pointIndex].y})');
     }
   }
 
   bool get isCalibrated => _isCalibrated;
   List<CalibrationPoint> get calibrationPoints => _calibrationPoints;
 
-  GazeData? calculateGaze(Face face, Size screenSize) {
-    if (_screenSize == null) {
-      _screenSize = screenSize;
-    }
+  GazeData? calculateGaze(Face face, Size imageSize, Size screenSize) {
+    _imageSize = imageSize;
+    _screenSize = screenSize;
 
-    // Get iris centers
     final leftIris = face.eyes?.leftEye?.irisCenter;
     final rightIris = face.eyes?.rightEye?.irisCenter;
 
@@ -96,25 +88,22 @@ class GazeTracker {
       return null;
     }
 
-    // Calculate average iris position
+    // Calculate average iris position in image coordinates
     final irisX = (leftIris.x + rightIris.x) / 2;
     final irisY = (leftIris.y + rightIris.y) / 2;
 
     Offset gazePoint;
 
     if (_isCalibrated) {
-      // Use calibration for accurate mapping
       gazePoint = _interpolateGaze(irisX, irisY, screenSize);
     } else {
-      // Fallback to simple proportional mapping
-      // Iris coordinates are already in screen space from the package
-      gazePoint = Offset(irisX, irisY);
+      // Simple proportional mapping as fallback
+      final scaleX = screenSize.width / imageSize.width;
+      final scaleY = screenSize.height / imageSize.height;
+      gazePoint = Offset(irisX * scaleX, irisY * scaleY);
     }
 
-    // Apply smoothing
     final smoothedGaze = _applySmoothing(gazePoint);
-
-    // Calculate confidence
     final confidence = _isCalibrated ? 0.95 : 0.7;
 
     return GazeData(
@@ -125,7 +114,6 @@ class GazeTracker {
   }
 
   Offset _interpolateGaze(double irisX, double irisY, Size screenSize) {
-    // Find nearest calibration points and interpolate
     final distances = _calibrationPoints.map((point) {
       final dx = point.eyeCenterX! - irisX;
       final dy = point.eyeCenterY! - irisY;
@@ -134,7 +122,6 @@ class GazeTracker {
     }).toList()
       ..sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
 
-    // Use 4 nearest points for interpolation
     double totalWeight = 0;
     double weightedX = 0;
     double weightedY = 0;
@@ -144,7 +131,6 @@ class GazeTracker {
       final point = data['point'] as CalibrationPoint;
       final distance = data['distance'] as double;
 
-      // Inverse distance weighting
       final weight = distance > 0 ? 1 / math.pow(distance, 2) : 1000;
 
       totalWeight += weight;
@@ -164,16 +150,11 @@ class GazeTracker {
 
   Offset _applySmoothing(Offset point) {
     _gazeHistory.add(point);
-
     if (_gazeHistory.length > _historySize) {
       _gazeHistory.removeAt(0);
     }
+    if (_gazeHistory.length < 3) return point;
 
-    if (_gazeHistory.length < 3) {
-      return point;
-    }
-
-    // Weighted moving average
     double totalWeight = 0;
     double weightedX = 0;
     double weightedY = 0;
@@ -181,27 +162,12 @@ class GazeTracker {
     for (int i = 0; i < _gazeHistory.length; i++) {
       final weight = math.pow(1.3, i).toDouble();
       final p = _gazeHistory[i];
-
       totalWeight += weight;
       weightedX += p.dx * weight;
       weightedY += p.dy * weight;
     }
 
     return Offset(weightedX / totalWeight, weightedY / totalWeight);
-  }
-
-  Offset? getRawIrisCenter(Face face) {
-    final leftIris = face.eyes?.leftEye?.irisCenter;
-    final rightIris = face.eyes?.rightEye?.irisCenter;
-
-    if (leftIris == null || rightIris == null) {
-      return null;
-    }
-
-    return Offset(
-      (leftIris.x + rightIris.x) / 2,
-      (leftIris.y + rightIris.y) / 2,
-    );
   }
 
   void reset() {

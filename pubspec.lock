@@ -45,10 +45,10 @@ packages:
     dependency: transitive
     description:
       name: camera_avfoundation
-      sha256: a600b60a7752cc5fa9de476cd0055539d7a3b9d62662f4f446bae49eba2267df
+      sha256: "4e47c2796dab3f21fdfe1d15151bf628519093b171307cb64a71ba8e451697b5"
       url: "https://pub.dev"
     source: hosted
-    version: "0.9.22+9"
+    version: "0.9.23"
   camera_platform_interface:
     dependency: transitive
     description:
@@ -93,10 +93,10 @@ packages:
     dependency: transitive
     description:
       name: cross_file
-      sha256: "701dcfc06da0882883a2657c445103380e53e647060ad8d9dfb710c100996608"
+      sha256: "28bb3ae56f117b5aec029d702a90f57d285cd975c3c5c281eaca38dbc47c5937"
       url: "https://pub.dev"
     source: hosted
-    version: "0.3.5+1"
+    version: "0.3.5+2"
   crypto:
     dependency: transitive
     description:
@@ -105,14 +105,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.7"
-  face_detection_tflite:
-    dependency: "direct main"
-    description:
-      name: face_detection_tflite
-      sha256: "7174d00dcd7e452d0785b7aab8264fe911eca358501d14abe422e8a1ba3cc815"
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.0.0"
   fake_async:
     dependency: transitive
     description:
@@ -160,6 +152,22 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  google_mlkit_commons:
+    dependency: transitive
+    description:
+      name: google_mlkit_commons
+      sha256: "9990a65f407a3ef6bae646bf10143faa93fec126683771465bc6c0b43fb0e6e9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.8.1"
+  google_mlkit_face_detection:
+    dependency: "direct main"
+    description:
+      name: google_mlkit_face_detection
+      sha256: "0aeab4f39204f7a235ed4cccedfe7e61401b43f4ef139a868c01fa29fdc225ab"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.11.1"
   image:
     dependency: "direct main"
     description:
@@ -220,10 +228,10 @@ packages:
     dependency: transitive
     description:
       name: meta
-      sha256: e3641ec5d63ebf0d9b41bd43201a66e3fc79a65db5f61fc181f04cd27aab950c
+      sha256: "23f08335362185a5ea2ad3a4e597f1375e78bce8a040df5c600c8d3552ef2394"
       url: "https://pub.dev"
     source: hosted
-    version: "1.16.0"
+    version: "1.17.0"
   path:
     dependency: transitive
     description:
@@ -304,14 +312,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.0.3"
-  quiver:
-    dependency: transitive
-    description:
-      name: quiver
-      sha256: ea0b925899e64ecdfbf9c7becb60d5b50e706ade44a85b2363be2a22d88117d2
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.2.2"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -321,10 +321,10 @@ packages:
     dependency: transitive
     description:
       name: source_span
-      sha256: "254ee5351d6cb365c859e20ee823c3bb479bf4a293c22d17a9f1bf144ce86f7c"
+      sha256: "56a02f1f4cd1a2d96303c0144c93bd6d909eea6bee6bf5a0e0b685edbd4c47ab"
       url: "https://pub.dev"
     source: hosted
-    version: "1.10.1"
+    version: "1.10.2"
   stack_trace:
     dependency: transitive
     description:
@@ -369,18 +369,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "522f00f556e73044315fa4585ec3270f1808a4b186c936e612cab0b565ff1e00"
+      sha256: ab2726c1a94d3176a45960b6234466ec367179b87dd74f1611adb1f3b5fb9d55
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.6"
-  tflite_flutter_custom:
-    dependency: transitive
-    description:
-      name: tflite_flutter_custom
-      sha256: "9723824fa47b75aee483ea1c4025a25befcc0a04c4fc503f3ba0005f2b9ab9d0"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
+    version: "0.7.7"
   typed_data:
     dependency: transitive
     description:

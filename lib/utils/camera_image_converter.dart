@@ -3,23 +3,29 @@ import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
 
 class CameraImageConverter {
-  static Uint8List convertCameraImageToBytes(CameraImage cameraImage) {
+  static Map<String, dynamic> convertCameraImageToJpeg(CameraImage cameraImage) {
     try {
-      // Handle different image formats
-      if (cameraImage.format.group == ImageFormatGroup.yuv420) {
-        return _convertYUV420ToImage(cameraImage);
-      } else if (cameraImage.format.group == ImageFormatGroup.bgra8888) {
-        return _convertBGRA8888ToImage(cameraImage);
-      } else {
-        throw Exception('Unsupported image format: ${cameraImage.format.group}');
-      }
+      final convertedImage = _convertYUV420(cameraImage);
+      final jpegBytes = Uint8List.fromList(img.encodeJpg(convertedImage, quality: 90));
+
+      return {
+        'bytes': jpegBytes,
+        'width': convertedImage.width,
+        'height': convertedImage.height,
+      };
     } catch (e) {
       print('Error converting camera image: $e');
       rethrow;
     }
   }
 
-  static Uint8List _convertYUV420ToImage(CameraImage cameraImage) {
+  // Keep the old method for backward compatibility
+  static Uint8List convertCameraImageToBytes(CameraImage cameraImage) {
+    final result = convertCameraImageToJpeg(cameraImage);
+    return result['bytes'] as Uint8List;
+  }
+
+  static img.Image _convertYUV420(CameraImage cameraImage) {
     final int width = cameraImage.width;
     final int height = cameraImage.height;
 
@@ -48,18 +54,6 @@ class CameraImageConverter {
       }
     }
 
-    return Uint8List.fromList(img.encodeJpg(image, quality: 90));
-  }
-
-  static Uint8List _convertBGRA8888ToImage(CameraImage cameraImage) {
-    final img.Image image = img.Image.fromBytes(
-      width: cameraImage.width,
-      height: cameraImage.height,
-      bytes: cameraImage.planes[0].bytes.buffer,
-      format: img.Format.uint8,
-      numChannels: 4,
-    );
-
-    return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+    return image;
   }
 }

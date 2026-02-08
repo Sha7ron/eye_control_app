@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:face_detection_tflite/face_detection_tflite.dart';
+import 'dart:typed_data';
 import '../services/iris_detector_service.dart';
 import '../services/gaze_tracker.dart';
 import '../utils/camera_image_converter.dart';
@@ -9,6 +10,7 @@ import '../widgets/iris_painter.dart';
 import '../widgets/gaze_cursor_painter.dart';
 import '../models/calibration_point.dart';
 import 'calibration_screen.dart';
+import 'app_selector_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
@@ -32,6 +34,9 @@ class _CameraScreenState extends State<CameraScreen> {
   int _frameCount = 0;
   String _debugInfo = '';
   CameraDescription? _camera;
+
+  // Actual processed image size
+  Size _processedImageSize = const Size(640, 480);
 
   // Gaze tracking
   GazeData? _currentGaze;
@@ -58,7 +63,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     try {
-      // Initialize iris detector
       await _irisDetector.initialize();
 
       _cameras = await availableCameras();
@@ -77,7 +81,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
       _cameraController = CameraController(
         _camera!,
-        ResolutionPreset.high,
+        ResolutionPreset.medium, // Use medium for consistent size
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -87,10 +91,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
       setState(() {
         _isInitialized = true;
-        _debugInfo = '✓ Iris tracking ready';
+        _debugInfo = '✓ Ready';
       });
 
-      print('✓ Camera and iris detector initialized');
+      print('✓ Camera initialized');
     } catch (e) {
       setState(() {
         _errorMessage = 'Error: $e';
@@ -106,26 +110,36 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       _frameCount++;
 
-      // Convert camera image to bytes
-      final imageBytes = CameraImageConverter.convertCameraImageToBytes(image);
+      // Convert and get actual dimensions
+      final conversion = CameraImageConverter.convertCameraImageToJpeg(image);
+      final imageBytes = conversion['bytes'] as Uint8List;
+      final actualWidth = conversion['width'] as int;
+      final actualHeight = conversion['height'] as int;
 
-      // Detect faces with iris tracking
+      // Update processed image size
+      _processedImageSize = Size(actualWidth.toDouble(), actualHeight.toDouble());
+
+      // Detect faces
       final faces = await _irisDetector.detectFaces(imageBytes);
 
       final screenSize = MediaQuery.of(context).size;
 
       GazeData? gazeData;
       if (faces.isNotEmpty && faces.first.eyes != null) {
-        gazeData = _gazeTracker.calculateGaze(faces.first, screenSize);
+        gazeData = _gazeTracker.calculateGaze(
+          faces.first,
+          _processedImageSize,
+          screenSize,
+        );
       }
 
       setState(() {
         _faces = faces;
         _currentGaze = gazeData;
-        _debugInfo = 'Frame: $_frameCount | Faces: ${faces.length}';
+        _debugInfo = 'Frame: $_frameCount | ${actualWidth}x${actualHeight}';
       });
     } catch (e) {
-      print('✗ Processing error: $e');
+      print('✗ Error: $e');
     } finally {
       _isDetecting = false;
     }
@@ -142,7 +156,12 @@ class _CameraScreenState extends State<CameraScreen> {
   void _onPointCalibrated(int index) {
     if (_faces.isNotEmpty) {
       final screenSize = MediaQuery.of(context).size;
-      _gazeTracker.addCalibrationData(index, _faces.first, screenSize);
+      _gazeTracker.addCalibrationData(
+        index,
+        _faces.first,
+        _processedImageSize,
+        screenSize,
+      );
     }
   }
 
@@ -153,9 +172,20 @@ class _CameraScreenState extends State<CameraScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('✓ Calibration complete! Gaze tracking active.'),
+        content: Text('✓ Calibration complete! Try the app selector.'),
         backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _openAppSelector() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AppSelectorScreen(
+          onGazeUpdate: (gazePoint) {},
+        ),
       ),
     );
   }
@@ -172,7 +202,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Eye Control - Iris Tracking'),
+        title: const Text('Eye Control'),
         backgroundColor: Colors.blue,
         actions: [
           if (_isInitialized && !_showCalibration)
@@ -183,6 +213,12 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
               onPressed: _startCalibration,
               tooltip: 'Calibrate',
+            ),
+          if (_isInitialized && _gazeTracker.isCalibrated && !_showCalibration)
+            IconButton(
+              icon: const Icon(Icons.apps),
+              onPressed: _openAppSelector,
+              tooltip: 'App Selector',
             ),
         ],
       ),
@@ -206,7 +242,7 @@ class _CameraScreenState extends State<CameraScreen> {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 16),
-            Text('Initializing iris tracker...'),
+            Text('Initializing...'),
           ],
         ),
       );
@@ -223,11 +259,15 @@ class _CameraScreenState extends State<CameraScreen> {
           child: CameraPreview(_cameraController!),
         ),
 
-        // Iris detection overlay
+        // Face/Iris overlay
         if (!_showCalibration)
           CustomPaint(
             size: size,
-            painter: IrisPainter(faces: _faces),
+            painter: IrisPainter(
+              faces: _faces,
+              imageSize: _processedImageSize,
+              canvasSize: size,
+            ),
           ),
 
         // Gaze cursor
@@ -240,7 +280,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-        // Calibration overlay
+        // Calibration
         if (_showCalibration)
           CalibrationScreen(
             calibrationPoints: _calibrationPoints,
@@ -248,83 +288,68 @@ class _CameraScreenState extends State<CameraScreen> {
             onCalibrationComplete: _onCalibrationComplete,
           ),
 
-        // Status overlay
+        // Status
         if (!_showCalibration)
           Positioned(
             top: 20,
             left: 20,
             right: 20,
             child: Container(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.7),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Row(
                     children: [
                       Icon(
                         _faces.isNotEmpty ? Icons.face : Icons.face_outlined,
-                        color: _faces.isNotEmpty ? Colors.greenAccent : Colors.orange,
-                        size: 24,
+                        color: _faces.isNotEmpty ? Colors.green : Colors.orange,
+                        size: 20,
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        _faces.isNotEmpty && _faces.first.eyes != null
-                            ? '✓ Iris Detected'
-                            : 'Looking for eyes...',
-                        style: TextStyle(
-                          color: _faces.isNotEmpty && _faces.first.eyes != null
-                              ? Colors.greenAccent
-                              : Colors.orange,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _debugInfo,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.9),
-                      fontSize: 14,
-                    ),
-                  ),
-                  if (_currentGaze != null) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Text(
-                          '👁️ Gaze: (${_currentGaze!.gazePoint.dx.toInt()}, ${_currentGaze!.gazePoint.dy.toInt()})',
+                      Expanded(
+                        child: Text(
+                          _faces.isNotEmpty && _faces.first.eyes != null
+                              ? '✓ Tracking'
+                              : 'Searching...',
                           style: TextStyle(
-                            color: Colors.purpleAccent.withOpacity(0.9),
-                            fontSize: 14,
+                            color: _faces.isNotEmpty ? Colors.green : Colors.orange,
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        if (_gazeTracker.isCalibrated)
-                          const Icon(
-                            Icons.check_circle,
-                            color: Colors.green,
-                            size: 16,
-                          ),
-                      ],
-                    ),
-                  ],
-                  if (!_gazeTracker.isCalibrated) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      '⚠️ Tap settings to calibrate',
-                      style: TextStyle(
-                        color: Colors.yellow.withOpacity(0.9),
-                        fontSize: 12,
                       ),
+                      if (_gazeTracker.isCalibrated)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'READY',
+                            style: TextStyle(
+                              color: Colors.green,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _debugInfo,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.7),
+                      fontSize: 11,
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),
@@ -342,7 +367,7 @@ class _CameraScreenState extends State<CameraScreen> {
           children: [
             const Icon(Icons.error_outline, color: Colors.red, size: 64),
             const SizedBox(height: 16),
-            Text(message, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+            Text(message, textAlign: TextAlign.center),
             if (showSettingsButton) ...[
               const SizedBox(height: 24),
               ElevatedButton(
