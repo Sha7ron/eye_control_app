@@ -20,30 +20,30 @@ class PreciseCalibrationScreen extends StatefulWidget {
 class _PreciseCalibrationScreenState extends State<PreciseCalibrationScreen> {
   int _currentPoint = 0;
   bool _isCollecting = false;
-  int _collectionProgress = 0;
+  int _samplesCollected = 0;
+  static const int _samplesPerPoint = 10;
   Timer? _collectionTimer;
 
   @override
   void initState() {
     super.initState();
-    _startCollection();
+    Future.delayed(const Duration(milliseconds: 500), _startCollection);
   }
 
   void _startCollection() {
     setState(() {
       _isCollecting = true;
-      _collectionProgress = 0;
+      _samplesCollected = 0;
     });
 
     _collectionTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      setState(() {
-        _collectionProgress += 10;
-      });
-
-      // Collect sample
       widget.onPointCalibrated(_currentPoint);
 
-      if (_collectionProgress >= 100) {
+      setState(() {
+        _samplesCollected++;
+      });
+
+      if (_samplesCollected >= _samplesPerPoint) {
         timer.cancel();
         _nextPoint();
       }
@@ -54,8 +54,9 @@ class _PreciseCalibrationScreenState extends State<PreciseCalibrationScreen> {
     if (_currentPoint < widget.calibrationPoints.length - 1) {
       setState(() {
         _currentPoint++;
+        _isCollecting = false;
       });
-      Future.delayed(const Duration(milliseconds: 500), _startCollection);
+      Future.delayed(const Duration(milliseconds: 300), _startCollection);
     } else {
       widget.onComplete();
     }
@@ -70,17 +71,17 @@ class _PreciseCalibrationScreenState extends State<PreciseCalibrationScreen> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.black.withOpacity(0.9),
+      color: Colors.black.withOpacity(0.95),
       child: Stack(
         children: [
           // Instructions
           Positioned(
-            top: 50,
+            top: 40,
             left: 0,
             right: 0,
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 30),
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: Colors.blue.withOpacity(0.9),
                 borderRadius: BorderRadius.circular(12),
@@ -88,21 +89,21 @@ class _PreciseCalibrationScreenState extends State<PreciseCalibrationScreen> {
               child: Column(
                 children: [
                   const Text(
-                    'Calibration',
+                    'Gaze Calibration',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 24,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   Text(
                     'Look at point ${_currentPoint + 1} of ${widget.calibrationPoints.length}',
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   LinearProgressIndicator(
-                    value: _collectionProgress / 100,
+                    value: _samplesCollected / _samplesPerPoint,
                     backgroundColor: Colors.white30,
                     valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
                   ),
@@ -118,34 +119,38 @@ class _PreciseCalibrationScreenState extends State<PreciseCalibrationScreen> {
             final isCompleted = index < _currentPoint;
 
             return Positioned(
-              left: point.dx - 30,
-              top: point.dy - 30,
+              left: point.dx - 25,
+              top: point.dy - 25,
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                width: 60,
-                height: 60,
+                duration: const Duration(milliseconds: 200),
+                width: 50,
+                height: 50,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: isCompleted
                       ? Colors.green
                       : isActive
-                      ? Colors.red
-                      : Colors.white30,
+                      ? Colors.red.withOpacity(0.8 + 0.2 * (_samplesCollected / _samplesPerPoint))
+                      : Colors.white.withOpacity(0.3),
                   border: Border.all(
                     color: Colors.white,
                     width: isActive ? 3 : 1,
                   ),
+                  boxShadow: isActive ? [
+                    BoxShadow(
+                      color: Colors.red.withOpacity(0.5),
+                      blurRadius: 20,
+                      spreadRadius: 5,
+                    ),
+                  ] : [],
                 ),
                 child: Center(
                   child: isCompleted
-                      ? const Icon(Icons.check, color: Colors.white, size: 30)
-                      : Text(
-                    '${index + 1}',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: isActive ? 24 : 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                      ? const Icon(Icons.check, color: Colors.white, size: 24)
+                      : Icon(
+                    Icons.circle,
+                    color: Colors.white,
+                    size: isActive ? 12 : 8,
                   ),
                 ),
               ),

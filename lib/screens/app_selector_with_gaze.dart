@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import '../widgets/dwell_button.dart';
+import '../services/app_launcher_service.dart';
 
 class AppSelectorWithGaze extends StatefulWidget {
   final Stream<Offset> gazeStream;
@@ -25,8 +26,6 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
   String? _selectedApp;
   StreamSubscription<Offset>? _gazeSubscription;
   String? _currentHoveredButton;
-
-  // Add this: Track current gaze position for debugging
   Offset? _currentGazePoint;
 
   @override
@@ -38,7 +37,7 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
   void _startGazeTracking() {
     _gazeSubscription = widget.gazeStream.listen((gazePoint) {
       setState(() {
-        _currentGazePoint = gazePoint; // Store for debugging
+        _currentGazePoint = gazePoint;
       });
       _checkButtonHover(gazePoint);
     });
@@ -90,20 +89,40 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
         point.dy <= position.dy + size.height;
   }
 
-  void _onAppSelected(String appName) {
+  Future<void> _onAppSelected(String appName) async {
     setState(() {
       _selectedApp = appName;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('✓ Selected: $appName'),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    // Launch the actual system app
+    try {
+      switch (appName) {
+        case 'Phone':
+          await AppLauncherService.launchPhone();
+          break;
+        case 'Messages':
+          await AppLauncherService.launchMessages();
+          break;
+        case 'Camera':
+          await AppLauncherService.launchCamera();
+          break;
+        case 'Settings':
+          await AppLauncherService.launchSettings();
+          break;
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error launching $appName: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
 
-    Future.delayed(const Duration(seconds: 2), () {
+    // Reset selection after a moment
+    Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted) {
         setState(() {
           _selectedApp = null;
@@ -125,8 +144,12 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
       appBar: AppBar(
         title: const Text('Select App with Eyes'),
         backgroundColor: Colors.blue,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context),
+        ),
       ),
-      body: Stack( // Changed to Stack to add gaze cursor overlay
+      body: Stack(
         children: [
           SafeArea(
             child: Padding(
@@ -144,14 +167,13 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
                         const Icon(Icons.visibility, color: Colors.white70, size: 32),
                         const SizedBox(height: 8),
                         const Text(
-                          'Look at any app for 2 seconds to select it',
+                          'Look at any app for 2 seconds to open it',
                           style: TextStyle(
                             color: Colors.white70,
                             fontSize: 16,
                           ),
                           textAlign: TextAlign.center,
                         ),
-                        // DEBUG: Show gaze coordinates
                         if (_currentGazePoint != null) ...[
                           const SizedBox(height: 8),
                           Text(
@@ -246,20 +268,20 @@ class _AppSelectorWithGazeState extends State<AppSelectorWithGaze> {
             ),
           ),
 
-          // DEBUG: Gaze cursor overlay
+          // Debug: Show gaze cursor
           if (_currentGazePoint != null)
             Positioned(
-              left: _currentGazePoint!.dx - 20,
-              top: _currentGazePoint!.dy - 20,
+              left: _currentGazePoint!.dx - 15,
+              top: _currentGazePoint!.dy - 15,
               child: Container(
-                width: 40,
-                height: 40,
+                width: 30,
+                height: 30,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.red, width: 2),
                 ),
                 child: const Center(
-                  child: Icon(Icons.add, color: Colors.red, size: 20),
+                  child: Icon(Icons.add, color: Colors.red, size: 16),
                 ),
               ),
             ),
