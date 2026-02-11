@@ -2,12 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:image/image.dart' as img;
 import '../services/face_detector_service.dart';
-import '../services/enhanced_gaze_tracker.dart';
-import '../services/pupil_detector.dart';
+import '../services/head_tracker.dart';
 import '../widgets/gaze_cursor_painter.dart';
-import 'smart_calibration_screen.dart';
+import 'simple_calibration_screen.dart';
 import 'app_selector_with_gaze.dart';
 
 class CameraScreen extends StatefulWidget {
@@ -23,23 +21,18 @@ class _CameraScreenState extends State<CameraScreen> {
   String _errorMessage = '';
 
   final FaceDetectorService _faceDetector = FaceDetectorService();
-  final EnhancedGazeTracker _gazeTracker = EnhancedGazeTracker();
-  final PupilDetector _pupilDetector = PupilDetector();
+  final HeadTracker _headTracker = HeadTracker();
 
   List<Face> _faces = [];
   bool _isDetecting = false;
-  EnhancedGazePoint? _currentGaze;
-
-  PupilInfo? _leftPupil;
-  PupilInfo? _rightPupil;
+  HeadPoint? _currentPosition;
 
   bool _needsCalibration = true;
   bool _showCalibration = false;
-  List<Offset> _calibrationPoints = [];
   int _faceDetectedFrames = 0;
 
   int _frameCount = 0;
-  String _debugInfo = '';
+  double _sensitivity = 2.5;
 
   @override
   void initState() {
@@ -65,7 +58,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
       _cameraController = CameraController(
         camera,
-        ResolutionPreset.high, // Higher resolution for better pupil detection
+        ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.nv21,
       );
@@ -90,49 +83,14 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       _frameCount++;
 
-      // Detect faces
       final faces = await _faceDetector.detectFaces(image);
       final screenSize = MediaQuery.of(context).size;
-      final imageSize = Size(image.width.toDouble(), image.height.toDouble());
 
-      PupilInfo? leftPupil;
-      PupilInfo? rightPupil;
-
-      // Detect pupils if face found
-      if (faces.isNotEmpty) {
-        final face = faces.first;
-
-        // Convert camera image to img.Image for pupil detection
-        final imgFrame = _convertYUV420ToImage(image);
-
-        if (imgFrame != null) {
-          // Get eye regions from ML Kit
-          final leftEyeRegion = PupilDetector.getEyeRegion(
-            face.landmarks[FaceLandmarkType.leftEye],
-            imageSize,
-          );
-          final rightEyeRegion = PupilDetector.getEyeRegion(
-            face.landmarks[FaceLandmarkType.rightEye],
-            imageSize,
-          );
-
-          // Detect pupils in eye regions
-          if (leftEyeRegion != null) {
-            leftPupil = _pupilDetector.detectPupilInEye(imgFrame, leftEyeRegion);
-          }
-          if (rightEyeRegion != null) {
-            rightPupil = _pupilDetector.detectPupilInEye(imgFrame, rightEyeRegion);
-          }
-        }
-      }
-
-      // Auto-start calibration when face detected
+      // Auto-start calibration
       if (_needsCalibration && faces.isNotEmpty) {
         _faceDetectedFrames++;
-
         if (_faceDetectedFrames >= 10 && !_showCalibration) {
           setState(() {
-            _calibrationPoints = _gazeTracker.getCalibrationPoints(screenSize);
             _showCalibration = true;
           });
         }
@@ -140,24 +98,15 @@ class _CameraScreenState extends State<CameraScreen> {
         _faceDetectedFrames = 0;
       }
 
-      // Calculate gaze if calibrated
-      EnhancedGazePoint? gaze;
+      // Calculate head position
+      HeadPoint? position;
       if (!_needsCalibration && faces.isNotEmpty) {
-        gaze = _gazeTracker.calculateGaze(
-          faces.first,
-          screenSize,
-          leftPupil,
-          rightPupil,
-        );
+        position = _headTracker.calculatePosition(faces.first);
       }
 
       setState(() {
         _faces = faces;
-        _currentGaze = gaze;
-        _leftPupil = leftPupil;
-        _rightPupil = rightPupil;
-        _debugInfo = 'Frame: $_frameCount | Pupils: ${leftPupil != null && rightPupil != null ? "✓" : "✗"}'
-            '${gaze != null && gaze.usingPupils ? " | Mode: PUPIL" : gaze != null ? " | Mode: LANDMARK" : ""}';
+        _currentPosition = position;
       });
     } catch (e) {
       print('Error: $e');
@@ -166,71 +115,25 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  img.Image? _convertYUV420ToImage(CameraImage image) {
-    try {
-      final width = image.width;
-      final height = image.height;
-
-      final yPlane = image.planes[0];
-      final uPlane = image.planes[1];
-      final vPlane = image.planes[2];
-
-      final imgData = img.Image(width: width, height: height);
-
-      for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-          final yIndex = y * yPlane.bytesPerRow + x;
-          final uvIndex = (y ~/ 2) * uPlane.bytesPerRow + (x ~/ 2);
-
-          if (yIndex >= yPlane.bytes.length ||
-              uvIndex >= uPlane.bytes.length ||
-              uvIndex >= vPlane.bytes.length) continue;
-
-          final yValue = yPlane.bytes[yIndex];
-          final uValue = uPlane.bytes[uvIndex];
-          final vValue = vPlane.bytes[uvIndex];
-
-          // YUV to RGB conversion
-          final r = (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
-          final g = (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128)).clamp(0, 255).toInt();
-          final b = (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
-
-          imgData.setPixelRgba(x, y, r, g, b, 255);
-        }
-      }
-
-      return imgData;
-    } catch (e) {
-      print('Image conversion error: $e');
-      return null;
-    }
-  }
-
-  void _onPointCalibrated(int index) {
+  void _onCalibrationComplete() {
     if (_faces.isNotEmpty) {
-      _gazeTracker.addCalibrationSample(
-        index,
-        _faces.first,
-        _calibrationPoints[index],
-        _leftPupil,
-        _rightPupil,
+      final screenSize = MediaQuery.of(context).size;
+      _headTracker.calibrate(_faces.first, screenSize);
+      _headTracker.setSensitivity(_sensitivity);
+
+      setState(() {
+        _showCalibration = false;
+        _needsCalibration = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✓ Head tracking calibrated! Move your head to control cursor.'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 3),
+        ),
       );
     }
-  }
-
-  void _onCalibrationComplete() {
-    setState(() {
-      _showCalibration = false;
-      _needsCalibration = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('✓ Enhanced tracking ready! Using pupil detection.'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 3),
-      ),
-    );
   }
 
   void _recalibrate() {
@@ -238,8 +141,37 @@ class _CameraScreenState extends State<CameraScreen> {
       _needsCalibration = true;
       _showCalibration = false;
       _faceDetectedFrames = 0;
+      _currentPosition = null;
     });
-    _gazeTracker.reset();
+    _headTracker.reset();
+  }
+
+  void _increaseSensitivity() {
+    setState(() {
+      _sensitivity = (_sensitivity + 0.5).clamp(1.0, 5.0);
+    });
+    _headTracker.setSensitivity(_sensitivity);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Sensitivity: ${_sensitivity.toStringAsFixed(1)}'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void _decreaseSensitivity() {
+    setState(() {
+      _sensitivity = (_sensitivity - 0.5).clamp(1.0, 5.0);
+    });
+    _headTracker.setSensitivity(_sensitivity);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Sensitivity: ${_sensitivity.toStringAsFixed(1)}'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
   }
 
   void _openAppSelector() {
@@ -249,7 +181,7 @@ class _CameraScreenState extends State<CameraScreen> {
         builder: (context) => AppSelectorWithGaze(
           gazeStream: Stream.periodic(
             const Duration(milliseconds: 50),
-                (_) => _currentGaze?.position,
+                (_) => _currentPosition?.position,
           ).where((p) => p != null).cast<Offset>(),
         ),
       ),
@@ -268,19 +200,31 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Enhanced Eye Control'),
+        title: const Text('Head Tracking Control'),
         backgroundColor: Colors.blue,
         actions: [
-          if (_isInitialized && !_needsCalibration)
+          if (_isInitialized && !_needsCalibration) ...[
+            IconButton(
+              icon: const Icon(Icons.remove),
+              onPressed: _decreaseSensitivity,
+              tooltip: 'Decrease sensitivity',
+            ),
+            IconButton(
+              icon: const Icon(Icons.add),
+              onPressed: _increaseSensitivity,
+              tooltip: 'Increase sensitivity',
+            ),
             IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: _recalibrate,
+              tooltip: 'Recalibrate',
             ),
-          if (_isInitialized && !_needsCalibration)
             IconButton(
               icon: const Icon(Icons.apps),
               onPressed: _openAppSelector,
+              tooltip: 'Open apps',
             ),
+          ],
         ],
       ),
       body: _buildBody(),
@@ -320,34 +264,24 @@ class _CameraScreenState extends State<CameraScreen> {
           child: CameraPreview(_cameraController!),
         ),
 
-        // Draw eye regions and pupils for debugging
-        if (!_needsCalibration)
-          CustomPaint(
-            size: size,
-            painter: _PupilDebugPainter(
-              leftPupil: _leftPupil,
-              rightPupil: _rightPupil,
-            ),
-          ),
-
-        if (!_needsCalibration && _currentGaze != null)
+        // Cursor
+        if (!_needsCalibration && _currentPosition != null)
           CustomPaint(
             size: size,
             painter: GazeCursorPainter(
-              gazePoint: _currentGaze!.position,
-              confidence: _currentGaze!.confidence,
+              gazePoint: _currentPosition!.position,
+              confidence: _currentPosition!.confidence,
             ),
           ),
 
+        // Calibration screen
         if (_showCalibration)
-          SmartCalibrationScreen(
-            points: _calibrationPoints,
+          SimpleCalibrationScreen(
             faceDetected: _faces.isNotEmpty,
-            onPointCalibrated: _onPointCalibrated,
             onComplete: _onCalibrationComplete,
           ),
 
-        // Enhanced status with pupil info
+        // Status
         if (!_showCalibration)
           Positioned(
             top: 20,
@@ -374,7 +308,7 @@ class _CameraScreenState extends State<CameraScreen> {
                         child: Text(
                           _needsCalibration
                               ? (_faceDetectedFrames > 0 ? 'Starting...' : 'Position face')
-                              : 'Tracking',
+                              : 'Tracking (Sensitivity: ${_sensitivity.toStringAsFixed(1)})',
                           style: TextStyle(
                             color: _faces.isNotEmpty ? Colors.green : Colors.orange,
                             fontSize: 16,
@@ -382,36 +316,16 @@ class _CameraScreenState extends State<CameraScreen> {
                           ),
                         ),
                       ),
-                      if (!_needsCalibration && _currentGaze != null)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: _currentGaze!.usingPupils
-                                ? Colors.green.withOpacity(0.3)
-                                : Colors.orange.withOpacity(0.3),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            _currentGaze!.usingPupils ? 'PUPILS' : 'LANDMARKS',
-                            style: TextStyle(
-                              color: _currentGaze!.usingPupils ? Colors.green : Colors.orange,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
                     ],
                   ),
-                  if (_debugInfo.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      _debugInfo,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                      ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Frame: $_frameCount | Mode: HEAD TRACKING',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 11,
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),
@@ -419,50 +333,4 @@ class _CameraScreenState extends State<CameraScreen> {
       ],
     );
   }
-}
-
-// Debug painter to visualize pupils
-class _PupilDebugPainter extends CustomPainter {
-  final PupilInfo? leftPupil;
-  final PupilInfo? rightPupil;
-
-  _PupilDebugPainter({this.leftPupil, this.rightPupil});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-
-    // Draw left pupil
-    if (leftPupil != null) {
-      paint.color = Colors.cyan;
-      canvas.drawCircle(
-        leftPupil!.pupilCenter,
-        leftPupil!.pupilRadius,
-        paint,
-      );
-
-      // Draw eye region
-      paint.color = Colors.cyan.withOpacity(0.3);
-      canvas.drawRect(leftPupil!.eyeRegion, paint);
-    }
-
-    // Draw right pupil
-    if (rightPupil != null) {
-      paint.color = Colors.cyan;
-      canvas.drawCircle(
-        rightPupil!.pupilCenter,
-        rightPupil!.pupilRadius,
-        paint,
-      );
-
-      // Draw eye region
-      paint.color = Colors.cyan.withOpacity(0.3);
-      canvas.drawRect(rightPupil!.eyeRegion, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_PupilDebugPainter oldDelegate) => true;
 }
